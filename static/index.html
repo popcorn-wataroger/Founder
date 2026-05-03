@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Founder - prototype</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;600&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #FAF9F6;
+  --bg-card: #FFFFFF;
+  --bg-sidebar: #1A1A2E;
+  --bg-sidebar-hover: #25254a;
+  --accent: #E8593C;
+  --accent-light: #FEF0ED;
+  --teal: #1D9E75;
+  --teal-light: #E1F5EE;
+  --text: #1A1A2E;
+  --text-secondary: #6B6B80;
+  --text-inverse: #E8E8F0;
+  --border: #E8E6E1;
+  --chat-user: #E8593C;
+  --chat-ai: #F0EFEA;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 3px rgba(26,26,46,0.06);
+  --shadow-lg: 0 8px 30px rgba(26,26,46,0.08);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Noto Sans JP', 'DM Sans', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  overflow: hidden;
+  height: 100vh;
+}
+
+.screen { display: none; height: 100vh; animation: fadeIn 0.3s ease; }
+.screen.active { display: flex; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ========== LOGIN ========== */
+.login-screen {
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1A1A2E 0%, #2D2D5E 100%);
+  position: relative;
+  overflow: hidden;
+}
+.login-screen::before {
+  content: '';
+  position: absolute;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, rgba(232,89,60,0.15) 0%, transparent 70%);
+  top: -200px; right: -100px;
+}
+.login-screen::after {
+  content: '';
+  position: absolute;
+  width: 400px; height: 400px;
+  background: radial-gradient(circle, rgba(29,158,117,0.1) 0%, transparent 70%);
+  bottom: -100px; left: -50px;
+}
+.login-box {
+  background: var(--bg-card);
+  border-radius: 20px;
+  padding: 48px 40px;
+  width: 380px;
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+}
+.login-logo {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  margin-bottom: 8px;
+  color: var(--text);
+}
+.login-logo span { color: var(--accent); }
+.login-sub {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-bottom: 32px;
+}
+.form-group { margin-bottom: 20px; }
+.form-group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+.form-group input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.2s;
+  background: var(--bg);
+}
+.form-group input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: #fff;
+}
+.login-btn {
+  width: 100%;
+  padding: 13px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  margin-top: 8px;
+}
+.login-btn:hover { background: #d14e33; }
+.login-btn:active { transform: scale(0.98); }
+.login-hint {
+  margin-top: 20px;
+  padding: 12px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+.login-hint code {
+  background: #E8E6E1;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+/* ========== EMPLOYEE CHAT ========== */
+.chat-screen { flex-direction: column; background: #F5F4F0; }
+.chat-header {
+  display: flex;
+  align-items: center;
+  padding: 14px 20px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  flex-shrink: 0;
+}
+.chat-header-icon {
+  width: 38px; height: 38px;
+  background: var(--accent);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 600; font-size: 14px;
+  font-family: 'DM Sans', sans-serif;
+}
+.chat-header-info h2 { font-size: 15px; font-weight: 500; }
+.chat-header-info p { font-size: 11px; color: var(--teal); }
+.chat-header-logout {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+.chat-header-logout:hover { background: var(--bg); }
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.msg { display: flex; gap: 10px; max-width: 75%; animation: msgIn 0.25s ease; }
+@keyframes msgIn { from { opacity: 0; transform: translateY(8px); } }
+.msg.user { margin-left: auto; flex-direction: row-reverse; }
+.msg-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 500;
+}
+.msg.ai .msg-avatar { background: var(--accent-light); color: var(--accent); }
+.msg.user .msg-avatar { background: var(--teal-light); color: var(--teal); }
+.msg-bubble {
+  padding: 12px 16px;
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.msg.ai .msg-bubble {
+  background: var(--bg-card);
+  border-bottom-left-radius: 4px;
+  box-shadow: var(--shadow);
+}
+.msg.user .msg-bubble {
+  background: var(--chat-user);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.chat-input-area {
+  padding: 16px 20px;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.chat-input {
+  flex: 1;
+  padding: 12px 18px;
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--bg);
+  transition: border-color 0.2s;
+}
+.chat-input:focus { outline: none; border-color: var(--accent); }
+.chat-send {
+  width: 44px; height: 44px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.2s, transform 0.1s;
+  flex-shrink: 0;
+}
+.chat-send:hover { background: #d14e33; }
+.chat-send:active { transform: scale(0.92); }
+.chat-send svg { width: 18px; height: 18px; }
+
+/* ========== ADMIN LAYOUT ========== */
+.admin-screen { flex-direction: row; }
+.sidebar {
+  width: 240px;
+  background: var(--bg-sidebar);
+  color: var(--text-inverse);
+  padding: 24px 0;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.sidebar-logo {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  padding: 0 24px;
+  margin-bottom: 8px;
+}
+.sidebar-logo span { color: var(--accent); }
+.sidebar-badge {
+  font-size: 10px;
+  color: rgba(232,232,240,0.5);
+  padding: 0 24px;
+  margin-bottom: 32px;
+  letter-spacing: 1px;
+}
+.sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 24px;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: background 0.15s;
+  color: rgba(232,232,240,0.7);
+  border-left: 3px solid transparent;
+}
+.sidebar-item:hover { background: var(--bg-sidebar-hover); color: var(--text-inverse); }
+.sidebar-item.active {
+  background: var(--bg-sidebar-hover);
+  color: #fff;
+  font-weight: 500;
+  border-left-color: var(--accent);
+}
+.sidebar-item svg { width: 18px; height: 18px; opacity: 0.7; flex-shrink: 0; }
+.sidebar-item.active svg { opacity: 1; }
+.sidebar-bottom {
+  margin-top: auto;
+  padding: 16px 24px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.sidebar-user {
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer;
+  padding: 8px 0;
+}
+.sidebar-user-avatar {
+  width: 32px; height: 32px;
+  background: var(--accent);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; color: #fff;
+}
+.sidebar-user-name { font-size: 13px; }
+.sidebar-user-role { font-size: 10px; color: rgba(232,232,240,0.5); }
+.main-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 32px;
+}
+.main-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+.main-title { font-size: 22px; font-weight: 500; }
+.btn {
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: none;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #d14e33; }
+.btn-outline {
+  background: transparent;
+  color: var(--text);
+  border: 1.5px solid var(--border);
+}
+.btn-outline:hover { border-color: var(--text-secondary); }
+.btn-back {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  margin-bottom: 16px;
+  padding: 4px 0;
+}
+.btn-back:hover { color: var(--text); }
+
+/* ========== SOURCE MANAGEMENT ========== */
+.upload-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 40px;
+  text-align: center;
+  margin-bottom: 28px;
+  transition: border-color 0.2s, background 0.2s;
+  cursor: pointer;
+}
+.upload-zone:hover { border-color: var(--accent); background: var(--accent-light); }
+.upload-icon { font-size: 32px; margin-bottom: 8px; color: var(--text-secondary); }
+.upload-text { font-size: 14px; color: var(--text-secondary); margin-bottom: 4px; }
+.upload-hint { font-size: 11px; color: #aaa; }
+.source-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.source-table th {
+  text-align: left;
+  padding: 14px 20px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg);
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+.source-table td {
+  padding: 14px 20px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.source-table tr:last-child td { border-bottom: none; }
+.source-table tr:hover td { background: #FAFAF8; }
+.tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.tag-common { background: var(--teal-light); color: var(--teal); }
+.tag-individual { background: var(--accent-light); color: var(--accent); }
+.tag-pdf { background: #FEF0ED; color: #C0462E; }
+.tag-pptx { background: #FFF4E6; color: #B87517; }
+.tag-url { background: #E6F1FB; color: #185FA5; }
+.delete-btn {
+  color: #ccc;
+  cursor: pointer;
+  font-size: 16px;
+  transition: color 0.15s;
+  background: none; border: none;
+}
+.delete-btn:hover { color: var(--accent); }
+
+/* ========== STAFF LIST ========== */
+.staff-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+.staff-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  box-shadow: var(--shadow);
+  border: 1.5px solid transparent;
+}
+.staff-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--accent);
+}
+.staff-avatar {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  margin: 0 auto 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 500; color: #fff;
+}
+.staff-card:nth-child(1) .staff-avatar { background: #E8593C; }
+.staff-card:nth-child(2) .staff-avatar { background: #1D9E75; }
+.staff-card:nth-child(3) .staff-avatar { background: #534AB7; }
+.staff-card:nth-child(4) .staff-avatar { background: #BA7517; }
+.staff-card:nth-child(5) .staff-avatar { background: #185FA5; }
+.staff-card:nth-child(6) .staff-avatar { background: #D4537E; }
+.staff-card-name { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+.staff-card-dept { font-size: 11px; color: var(--text-secondary); }
+
+/* ========== STAFF DETAIL ========== */
+.detail-grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 24px;
+}
+.detail-profile {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+.detail-avatar {
+  width: 72px; height: 72px;
+  background: var(--accent);
+  border-radius: 50%;
+  margin: 0 auto 16px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 500; color: #fff;
+}
+.detail-name { text-align: center; font-size: 18px; font-weight: 500; margin-bottom: 4px; }
+.detail-dept { text-align: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 20px; }
+.detail-info { display: flex; flex-direction: column; gap: 12px; }
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-row:last-child { border-bottom: none; padding-bottom: 0; }
+.detail-label { color: var(--text-secondary); }
+.detail-value { font-weight: 500; }
+.detail-chat-btn {
+  width: 100%;
+  margin-top: 20px;
+  padding: 13px;
+  background: var(--teal);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.2s;
+}
+.detail-chat-btn:hover { background: #178862; }
+.detail-right { display: flex; flex-direction: column; gap: 20px; }
+.detail-section {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.detail-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.detail-section-body { padding: 16px 20px; }
+.chat-log-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.chat-log-item:last-child { border-bottom: none; }
+.chat-log-item:hover { background: #FAFAF8; margin: 0 -20px; padding: 12px 20px; }
+.chat-log-time { font-size: 11px; color: var(--text-secondary); white-space: nowrap; min-width: 80px; }
+.chat-log-text { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.chat-log-more {
+  text-align: center;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 500;
+}
+.chat-log-more:hover { text-decoration: underline; }
+.source-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.source-item:last-child { border-bottom: none; }
+.source-item-info { display: flex; align-items: center; gap: 10px; }
+.source-item-icon {
+  width: 32px; height: 32px;
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600;
+}
+.source-item-name { font-size: 13px; }
+.source-item-date { font-size: 11px; color: var(--text-secondary); }
+.source-dl {
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-weight: 500;
+}
+.source-dl:hover { text-decoration: underline; }
+
+/* ========== FULL CHAT MODAL ========== */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(26,26,46,0.5);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: var(--bg-card);
+  border-radius: 16px;
+  width: 600px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.modal-header h3 { font-size: 16px; font-weight: 500; }
+.modal-close {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--bg);
+  cursor: pointer;
+  font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary);
+  transition: background 0.15s;
+}
+.modal-close:hover { background: var(--border); }
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ========== AI CHAT MODAL ========== */
+.ai-chat-modal .modal { width: 560px; max-height: 85vh; }
+.ai-chat-modal .modal-body { padding: 16px 20px; gap: 12px; }
+.ai-chat-input-area {
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.ai-chat-input-area input {
+  flex: 1;
+  padding: 10px 16px;
+  border: 1.5px solid var(--border);
+  border-radius: 20px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--bg);
+}
+.ai-chat-input-area input:focus { outline: none; border-color: var(--teal); }
+.ai-chat-input-area button {
+  width: 38px; height: 38px;
+  background: var(--teal);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 768px) {
+  .sidebar { width: 60px; padding: 16px 0; }
+  .sidebar-logo, .sidebar-badge, .sidebar-item span, .sidebar-user-name, .sidebar-user-role { display: none; }
+  .sidebar-item { justify-content: center; padding: 14px; border-left: none; }
+  .sidebar-item.active { border-left: none; }
+  .sidebar-user { justify-content: center; }
+  .main-content { padding: 20px; }
+  .detail-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- ===== LOGIN SCREEN ===== -->
+<div id="screen-login" class="screen login-screen active">
+  <div class="login-box">
+    <div class="login-logo">F<span>.</span> Founder</div>
+    <p class="login-sub">社内AIアシスタント</p>
+    <div class="form-group">
+      <label>社員コード</label>
+      <input type="text" id="login-code" placeholder="例: EMP001" value="EMP001">
+    </div>
+    <div class="form-group">
+      <label>パスワード</label>
+      <input type="password" id="login-pass" placeholder="パスワード" value="demo">
+    </div>
+    <button class="login-btn" onclick="handleLogin()">ログイン</button>
+    <div class="login-hint">
+      社員: <code>EMP001</code> ～ <code>EMP006</code><br>
+      管理者: <code>ADMIN</code><br>
+      パスワード: 任意
+    </div>
+  </div>
+</div>
+
+<!-- ===== EMPLOYEE CHAT SCREEN ===== -->
+<div id="screen-chat" class="screen chat-screen">
+  <div class="chat-header">
+    <div class="chat-header-icon">F</div>
+    <div class="chat-header-info">
+      <h2>Founder</h2>
+      <p>オンライン</p>
+    </div>
+    <div class="chat-header-logout" onclick="logout()">ログアウト</div>
+  </div>
+  <div class="chat-messages" id="chat-messages">
+    <div class="msg ai">
+      <div class="msg-avatar">F</div>
+      <div class="msg-bubble">こんにちは！社内ナレッジについて何でも聞いてください。マニュアルや規定をもとにお答えします。</div>
+    </div>
+  </div>
+  <div class="chat-input-area">
+    <input type="text" class="chat-input" id="chat-input" placeholder="メッセージを入力..." onkeydown="if(event.key==='Enter')sendMessage()">
+    <button class="chat-send" onclick="sendMessage()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- ===== ADMIN SCREEN ===== -->
+<div id="screen-admin" class="screen admin-screen">
+  <div class="sidebar">
+    <div class="sidebar-logo">F<span>.</span></div>
+    <div class="sidebar-badge">ADMIN</div>
+    <nav class="sidebar-nav">
+      <div class="sidebar-item active" onclick="showAdminTab('sources')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <span>ソース管理</span>
+      </div>
+      <div class="sidebar-item" onclick="showAdminTab('staff')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        <span>スタッフ一覧</span>
+      </div>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="sidebar-user" onclick="logout()">
+        <div class="sidebar-user-avatar">社</div>
+        <div>
+          <div class="sidebar-user-name">社長</div>
+          <div class="sidebar-user-role">ログアウト</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main-content" id="main-content">
+    <!-- Source Management -->
+    <div id="tab-sources">
+      <div class="main-header">
+        <h1 class="main-title">ソース管理</h1>
+        <button class="btn btn-primary" onclick="alert('ファイル選択ダイアログ（実装時）')">+ アップロード</button>
+      </div>
+      <div class="upload-zone" onclick="alert('ファイル選択ダイアログ（実装時）')">
+        <div class="upload-icon">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </div>
+        <div class="upload-text">ファイルをドロップ、またはクリックして選択</div>
+        <div class="upload-hint">PDF, Word, PowerPoint, テキスト, URL に対応</div>
+      </div>
+      <table class="source-table">
+        <thead>
+          <tr><th>ファイル名</th><th>形式</th><th>種別</th><th>対象</th><th>登録日</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr><td>就業規則_2025.pdf</td><td><span class="tag tag-pdf">PDF</span></td><td><span class="tag tag-common">共通</span></td><td>—</td><td>2025.4.1</td><td><button class="delete-btn">×</button></td></tr>
+          <tr><td>新入社員マニュアル.pdf</td><td><span class="tag tag-pdf">PDF</span></td><td><span class="tag tag-common">共通</span></td><td>—</td><td>2025.4.1</td><td><button class="delete-btn">×</button></td></tr>
+          <tr><td>Q1_評価レポート.pptx</td><td><span class="tag tag-pptx">PPTX</span></td><td><span class="tag tag-individual">個別</span></td><td>奥村 仁哉</td><td>2025.4.15</td><td><button class="delete-btn">×</button></td></tr>
+          <tr><td>https://company.com/wiki</td><td><span class="tag tag-url">URL</span></td><td><span class="tag tag-common">共通</span></td><td>—</td><td>2025.3.20</td><td><button class="delete-btn">×</button></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Staff List -->
+    <div id="tab-staff" style="display:none">
+      <div class="main-header">
+        <h1 class="main-title">スタッフ一覧</h1>
+      </div>
+      <div class="staff-grid">
+        <div class="staff-card" onclick="showStaffDetail('奥村 仁哉','営業部')"><div class="staff-avatar">奥</div><div class="staff-card-name">奥村 仁哉</div><div class="staff-card-dept">営業部</div></div>
+        <div class="staff-card" onclick="showStaffDetail('田中 美咲','企画部')"><div class="staff-avatar">田</div><div class="staff-card-name">田中 美咲</div><div class="staff-card-dept">企画部</div></div>
+        <div class="staff-card" onclick="showStaffDetail('佐藤 健太','開発部')"><div class="staff-avatar">佐</div><div class="staff-card-name">佐藤 健太</div><div class="staff-card-dept">開発部</div></div>
+        <div class="staff-card" onclick="showStaffDetail('鈴木 愛','人事部')"><div class="staff-avatar">鈴</div><div class="staff-card-name">鈴木 愛</div><div class="staff-card-dept">人事部</div></div>
+        <div class="staff-card" onclick="showStaffDetail('高橋 翔','経理部')"><div class="staff-avatar">高</div><div class="staff-card-name">高橋 翔</div><div class="staff-card-dept">経理部</div></div>
+        <div class="staff-card" onclick="showStaffDetail('山田 花子','広報部')"><div class="staff-avatar">山</div><div class="staff-card-name">山田 花子</div><div class="staff-card-dept">広報部</div></div>
+      </div>
+    </div>
+
+    <!-- Staff Detail -->
+    <div id="tab-detail" style="display:none">
+      <button class="btn-back" onclick="showAdminTab('staff')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        スタッフ一覧に戻る
+      </button>
+      <div class="detail-grid">
+        <div class="detail-profile">
+          <div class="detail-avatar" id="detail-avatar">奥</div>
+          <div class="detail-name" id="detail-name">奥村 仁哉</div>
+          <div class="detail-dept" id="detail-dept">営業部</div>
+          <div class="detail-info">
+            <div class="detail-row"><span class="detail-label">社員コード</span><span class="detail-value">EMP001</span></div>
+            <div class="detail-row"><span class="detail-label">入社日</span><span class="detail-value">2020.4.1</span></div>
+            <div class="detail-row"><span class="detail-label">雇用形態</span><span class="detail-value">正社員</span></div>
+            <div class="detail-row"><span class="detail-label">性別</span><span class="detail-value">男性</span></div>
+            <div class="detail-row"><span class="detail-label">生年月日</span><span class="detail-value">1995.8.12</span></div>
+            <div class="detail-row"><span class="detail-label">家族構成</span><span class="detail-value">配偶者・子1</span></div>
+            <div class="detail-row"><span class="detail-label">最終ログイン</span><span class="detail-value">2025.5.3 14:22</span></div>
+          </div>
+          <button class="detail-chat-btn" onclick="openAiChat()">このスタッフについてチャット</button>
+        </div>
+        <div class="detail-right">
+          <div class="detail-section">
+            <div class="detail-section-header">
+              <span>最近のトーク内容</span>
+            </div>
+            <div class="detail-section-body">
+              <div class="chat-log-item" onclick="openChatLog()">
+                <span class="chat-log-time">5/3 14:20</span>
+                <span class="chat-log-text">有給休暇の申請方法を教えてください</span>
+              </div>
+              <div class="chat-log-item" onclick="openChatLog()">
+                <span class="chat-log-time">5/2 10:15</span>
+                <span class="chat-log-text">出張経費の精算について確認したい</span>
+              </div>
+              <div class="chat-log-item" onclick="openChatLog()">
+                <span class="chat-log-time">5/1 09:30</span>
+                <span class="chat-log-text">新入社員研修のスケジュールを教えて</span>
+              </div>
+              <div class="chat-log-item" onclick="openChatLog()">
+                <span class="chat-log-time">4/28 16:45</span>
+                <span class="chat-log-text">リモートワーク申請の手順は？</span>
+              </div>
+              <div class="chat-log-more" onclick="openChatLog()">すべてのトークを見る →</div>
+            </div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-section-header">
+              <span>過去のソース</span>
+              <button class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="alert('ソース追加ダイアログ（実装時）')">+ 追加</button>
+            </div>
+            <div class="detail-section-body">
+              <div class="source-item">
+                <div class="source-item-info">
+                  <div class="source-item-icon" style="background:#FEF0ED; color:#C0462E;">PDF</div>
+                  <div><div class="source-item-name">Q1_評価レポート.pdf</div><div class="source-item-date">2025.4.15</div></div>
+                </div>
+                <button class="source-dl">ダウンロード</button>
+              </div>
+              <div class="source-item">
+                <div class="source-item-info">
+                  <div class="source-item-icon" style="background:#FFF4E6; color:#B87517;">PPT</div>
+                  <div><div class="source-item-name">社内プレゼン_4月.pptx</div><div class="source-item-date">2025.4.1</div></div>
+                </div>
+                <button class="source-dl">ダウンロード</button>
+              </div>
+              <div class="source-item">
+                <div class="source-item-info">
+                  <div class="source-item-icon" style="background:#FEF0ED; color:#C0462E;">PDF</div>
+                  <div><div class="source-item-name">目標設定シート_2025.pdf</div><div class="source-item-date">2025.1.10</div></div>
+                </div>
+                <button class="source-dl">ダウンロード</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== CHAT LOG MODAL ===== -->
+<div id="modal-chatlog" class="modal-overlay" onclick="if(event.target===this)closeModal('modal-chatlog')">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>奥村 仁哉 — トーク全文</h3>
+      <button class="modal-close" onclick="closeModal('modal-chatlog')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">こんにちは！何かお手伝いできることはありますか？</div></div>
+      <div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--teal-light);color:var(--teal);">奥</div><div class="msg-bubble" style="font-size:13px;">有給休暇の申請方法を教えてください</div></div>
+      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">有給休暇の申請は、社内ポータルの「勤怠管理」メニューから行えます。申請期限は取得日の3営業日前までです。詳しくは就業規則の第15条をご確認ください。</div></div>
+      <div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--teal-light);color:var(--teal);">奥</div><div class="msg-bubble" style="font-size:13px;">承認者は誰になりますか？</div></div>
+      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">承認者は直属の上長です。営業部の場合は部長の山本さんが承認者になります。3日以上の連続取得の場合は、役員の追加承認が必要です。</div></div>
+      <div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--teal-light);color:var(--teal);">奥</div><div class="msg-bubble" style="font-size:13px;">出張経費の精算について確認したい</div></div>
+      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">出張経費の精算は、出張完了後5営業日以内に経費精算システムから申請してください。領収書の原本提出が必要です。交通費・宿泊費・日当の上限額は出張規定に記載されています。</div></div>
+      <div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--teal-light);color:var(--teal);">奥</div><div class="msg-bubble" style="font-size:13px;">新入社員研修のスケジュールを教えて</div></div>
+      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">2025年度の新入社員研修は4月1日〜4月14日の2週間です。1週目はビジネスマナーと会社概要、2週目は部門別OJTになります。</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== AI CHAT MODAL ===== -->
+<div id="modal-aichat" class="modal-overlay ai-chat-modal" onclick="if(event.target===this)closeModal('modal-aichat')">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 style="display:flex;align-items:center;gap:8px;">
+        <span style="width:24px;height:24px;background:var(--teal);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600;">奥</span>
+        奥村 仁哉 について質問
+      </h3>
+      <button class="modal-close" onclick="closeModal('modal-aichat')">×</button>
+    </div>
+    <div class="modal-body" id="ai-chat-body">
+      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">奥村さんに関する情報（評価資料、個別ソース）と共通ナレッジの両方を参照してお答えします。何を知りたいですか？</div></div>
+    </div>
+    <div class="ai-chat-input-area">
+      <input type="text" id="ai-chat-input" placeholder="例: 直近の評価はどうだった？" onkeydown="if(event.key==='Enter')sendAiChat()">
+      <button onclick="sendAiChat()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function handleLogin() {
+  const code = document.getElementById('login-code').value.toUpperCase();
+  if (code === 'ADMIN') {
+    showScreen('screen-admin');
+  } else {
+    showScreen('screen-chat');
+  }
+}
+
+function logout() {
+  showScreen('screen-login');
+}
+
+function showAdminTab(tab) {
+  document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+  document.getElementById('tab-sources').style.display = 'none';
+  document.getElementById('tab-staff').style.display = 'none';
+  document.getElementById('tab-detail').style.display = 'none';
+  if (tab === 'sources') {
+    document.getElementById('tab-sources').style.display = 'block';
+    document.querySelectorAll('.sidebar-item')[0].classList.add('active');
+  } else if (tab === 'staff') {
+    document.getElementById('tab-staff').style.display = 'block';
+    document.querySelectorAll('.sidebar-item')[1].classList.add('active');
+  } else if (tab === 'detail') {
+    document.getElementById('tab-detail').style.display = 'block';
+    document.querySelectorAll('.sidebar-item')[1].classList.add('active');
+  }
+}
+
+function showStaffDetail(name, dept) {
+  document.getElementById('detail-name').textContent = name;
+  document.getElementById('detail-dept').textContent = dept;
+  document.getElementById('detail-avatar').textContent = name.charAt(0);
+  showAdminTab('detail');
+}
+
+function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const container = document.getElementById('chat-messages');
+  container.innerHTML += '<div class="msg user"><div class="msg-avatar">自</div><div class="msg-bubble">' + text + '</div></div>';
+  input.value = '';
+  container.scrollTop = container.scrollHeight;
+  setTimeout(() => {
+    const responses = [
+      '就業規則によると、その件については以下のように定められています。詳細は社内ポータルの規定集をご確認ください。',
+      'マニュアルに記載がありました。該当セクションの内容をお伝えします。ご不明点があればお気軽にお聞きください。',
+      'その質問については、社内規定の第12条に関連する記載があります。具体的なお手続きについてご案内いたします。',
+    ];
+    const res = responses[Math.floor(Math.random() * responses.length)];
+    container.innerHTML += '<div class="msg ai"><div class="msg-avatar">F</div><div class="msg-bubble">' + res + '</div></div>';
+    container.scrollTop = container.scrollHeight;
+  }, 800);
+}
+
+function sendAiChat() {
+  const input = document.getElementById('ai-chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const container = document.getElementById('ai-chat-body');
+  container.innerHTML += '<div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--accent-light);color:var(--accent);">社</div><div class="msg-bubble" style="font-size:13px;">' + text + '</div></div>';
+  input.value = '';
+  container.scrollTop = container.scrollHeight;
+  setTimeout(() => {
+    container.innerHTML += '<div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">Q1評価レポートによると、奥村さんの営業成績は目標達成率112%で、チーム内トップの実績でした。特に新規顧客開拓で高い評価を受けています。</div></div>';
+    container.scrollTop = container.scrollHeight;
+  }, 800);
+}
+
+function openChatLog() { document.getElementById('modal-chatlog').classList.add('active'); }
+function openAiChat() { document.getElementById('modal-aichat').classList.add('active'); }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+</script>
+</body>
+</html>
