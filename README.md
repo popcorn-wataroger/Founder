@@ -4,36 +4,34 @@
 
 ## 概要
 
-社長がアップロードしたソース（マニュアル、規定、社員個別資料など）をもとに、AIが社員の質問に回答する社内チャットボット。
+社長がアップロードしたソース（マニュアル、規定、社員個別資料など）をもとに、AIが社員の質問に回答する社内Webアプリ。
+
+- **社員向け：** LINE風チャットUIで社内ナレッジに即座にアクセス
+- **社長向け：** ソース管理、チャットログ閲覧、スタッフ管理を一元化
 
 ## 技術スタック
 
 | 領域 | 技術 |
 |------|------|
-| フロントエンド | HTML / CSS / JavaScript |
-| バックエンド | Python（FastAPI） |
-| AI基盤 | OpenAI API |
+| フロントエンド | HTML / CSS / JavaScript（バニラ） |
+| バックエンド | Python / FastAPI |
+| AI | OpenAI API |
 | ベクトルDB | Qdrant |
-| ファイルストレージ | Google Cloud Storage |
-| ホスティング | Google Cloud Platform |
+| ストレージ | Google Cloud Storage |
+| ホスティング | GCP（Cloud Run + Cloud SQL） |
 
 ## セットアップ
 
 ```bash
-# 依存パッケージのインストール
-pip install -r requirements.txt
-
-# 環境変数の設定
+uv sync
 cp .env.example .env
 # .env を編集して OPENAI_API_KEY 等を設定
-
-# 開発サーバー起動
-uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
-ブラウザで http://localhost:8000 にアクセス。
+http://localhost:8000 にアクセス。
 
-## ログイン（デモ）
+## デモ用ログイン
 
 | コード | ロール |
 |--------|--------|
@@ -42,28 +40,8 @@ uvicorn app.main:app --reload
 
 パスワード: 任意
 
-## ディレクトリ構成
+## ドキュメント
 
-```
-Founder/
-├── app/
-│   └── main.py              # FastAPI アプリケーション
-├── static/
-│   ├── css/
-│   │   └── style.css         # スタイルシート
-│   ├── js/
-│   │   ├── login.js          # ログイン画面
-│   │   ├── chat.js           # 社員用チャット
-│   │   └── admin.js          # 管理者画面
-│   └── index.html            # エントリーポイント
-├── docs/
-│   └── requirements.md       # 要件定義書
-├── requirements.txt
-├── .env.example
-├── .gitignore
-└── README.md
-```
-
-## ライセンス
-
-Private
+- 詳細な要件定義・データモデル・画面仕様は `CLAUDE.md` を参照。
+- GitHub の運用ルールは `docs/github-workflow.md` を参照。
+- UI の確認方法は `docs/ui-review.md` を参照。
