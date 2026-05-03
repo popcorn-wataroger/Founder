@@ -56,7 +56,7 @@ Founder/
 
 ## GitHub運用
 
-初心者エンジニアが開発に参加する前提のため、`main` への直接 push は禁止。作業ブランチを作成し、PRレビュー後にマージすること。詳細は `docs/github-workflow.md` を参照。
+初心者エンジニアが開発に参加する前提のため、`main` への直接 push は禁止。作業前に必ず Issue を作成し、作業ブランチを作成して、PRレビュー後にマージすること。詳細は `docs/github-workflow.md` を参照。
 
 ## UI確認
 

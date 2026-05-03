@@ -1,47 +1,87 @@
 # GitHub運用ルール
 
-このプロジェクトは、初心者エンジニアでも安全に開発できるように、必ず Pull Request（PR）ベースで進めます。
+このプロジェクトは、初心者エンジニアでも安全に開発できるように、必ず Issue と Pull Request（PR）ベースで進めます。
 
 ## 基本ルール
 
 - `main` ブランチへ直接 push しない
+- 作業前に必ず Issue を作成する
+- Issue に書かれていない作業を勝手に広げない
 - 作業ごとにブランチを作る
 - 変更は小さく分ける
+- PR には対応する Issue を必ず紐付ける
 - PR を作ってからレビューを受ける
 - レビューで OK が出てから `main` にマージする
 - わからないまま大きく直さず、早めに相談する
 
+## Issue作成
+
+作業を始める前に、必ず Issue を作成します。小さな修正でも Issue を作ってから着手してください。
+
+Issue に書くこと:
+
+- 何をしたいか
+- なぜ必要か
+- 完了条件
+- 確認方法
+- 不明点や相談したいこと
+
+Issue の例:
+
+```markdown
+## やりたいこと
+ログイン画面で、社員コードが空欄のまま送信されたときにエラーを表示する。
+
+## 背景
+現状は何も入力しなくても次の画面に進めてしまい、デモ時にわかりにくい。
+
+## 完了条件
+- 社員コードが空欄の場合にエラーが表示される
+- パスワードが空欄の場合にエラーが表示される
+- 正しい入力時はこれまで通りログインできる
+
+## 確認方法
+- `uv run uvicorn app.main:app --reload` で起動
+- 空欄でログインしてエラー表示を確認
+- `ADMIN` でログインできることを確認
+
+## 相談事項
+- エラーメッセージの文言は仮でよいか
+```
+
+Issue が作成できたら、Issue 番号を確認します。例: `#12`
+
 ## ブランチ名
 
-ブランチ名は、作業内容がわかる名前にします。
+ブランチ名は、Issue 番号と作業内容がわかる名前にします。
 
 ```bash
-feature/login-page
-feature/chat-ui
-fix/login-error
-docs/update-readme
-refactor/static-js
+feature/12-login-page
+feature/15-chat-ui
+fix/18-login-error
+docs/21-update-readme
+refactor/24-static-js
 ```
 
 使い分け:
 
 | 種別 | 用途 | 例 |
 |------|------|----|
-| `feature/` | 新機能追加 | `feature/source-upload` |
-| `fix/` | バグ修正 | `fix/admin-login` |
-| `docs/` | ドキュメント修正 | `docs/github-workflow` |
-| `refactor/` | 挙動を変えない整理 | `refactor/chat-js` |
+| `feature/` | 新機能追加 | `feature/12-source-upload` |
+| `fix/` | バグ修正 | `fix/18-admin-login` |
+| `docs/` | ドキュメント修正 | `docs/21-github-workflow` |
+| `refactor/` | 挙動を変えない整理 | `refactor/24-chat-js` |
 
 ## 作業開始の流れ
 
 ```bash
 git checkout main
 git pull origin main
-git checkout -b feature/作業名
+git checkout -b feature/Issue番号-作業名
 uv sync
 ```
 
-作業前に必ず最新の `main` を取り込みます。
+作業前に必ず Issue を作成し、最新の `main` を取り込みます。
 
 ## 開発中の確認
 
@@ -93,6 +133,8 @@ uv run uvicorn app.main:app --reload
 チェック項目:
 
 - 不要なファイル（`.DS_Store`, `.env`, `.venv` など）が入っていない
+- 対応する Issue がある
+- PR から Issue へリンクしている
 - `README.md` や `CLAUDE.md` の手順と実装がズレていない
 - 変更内容を自分の言葉で説明できる
 - 動作確認した内容を PR に書ける
@@ -103,6 +145,8 @@ uv run uvicorn app.main:app --reload
 PR には次の内容を書きます。
 
 ```markdown
+Closes #12
+
 ## 変更内容
 - ログイン画面に入力チェックを追加
 - エラー表示の文言を調整
@@ -115,6 +159,8 @@ PR には次の内容を書きます。
 ## 相談事項
 - エラーメッセージの文言は仮です
 ```
+
+`Closes #12` のように書くと、PR がマージされたときに Issue も自動で閉じます。番号は実際の Issue 番号に置き換えてください。
 
 ## レビュー対応
 
@@ -146,6 +192,8 @@ git branch -d ブランチ名
 ## やってはいけないこと
 
 - `main` へ直接 push する
+- Issue を作らずに作業を始める
+- Issue と関係ない変更を同じ PR に入れる
 - `.env` や API キーを commit する
 - よくわからないまま `git reset --hard` や `git push --force` を使う
 - 他の人の変更を勝手に消す
