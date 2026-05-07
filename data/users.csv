@@ -1,0 +1,8 @@
+user_id,employee_code,name,department,gender,birth_date,family,hire_date,employment_type,password,role,last_login_at
+1,ADMIN,管理者,経営,男性,1970-01-01,,2000-04-01,正社員,password,admin,
+2,EMP001,奥村仁哉,営業部,男性,1995-08-12,配偶者・子1,2020-04-01,正社員,password,employee,
+3,EMP002,田中美咲,企画部,女性,1998-03-25,,2021-04-01,正社員,password,employee,
+4,EMP003,佐藤健太,開発部,男性,1993-11-08,,2018-04-01,正社員,password,employee,
+5,EMP004,鈴木愛,人事部,女性,1996-06-14,,2019-04-01,正社員,password,employee,
+6,EMP005,高橋翔,経理部,男性,1994-09-30,,2017-04-01,正社員,password,employee,
+7,EMP006,山田花子,広報部,女性,1999-01-20,,2022-04-01,正社員,password,employee,
