@@ -901,6 +901,8 @@ body {
   </div>
 </div>
 
+<script src="/static/js/chat.js"></script>
+
 <script>
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -942,26 +944,6 @@ function showStaffDetail(name, dept) {
   document.getElementById('detail-dept').textContent = dept;
   document.getElementById('detail-avatar').textContent = name.charAt(0);
   showAdminTab('detail');
-}
-
-function sendMessage() {
-  const input = document.getElementById('chat-input');
-  const text = input.value.trim();
-  if (!text) return;
-  const container = document.getElementById('chat-messages');
-  container.innerHTML += '<div class="msg user"><div class="msg-avatar">自</div><div class="msg-bubble">' + text + '</div></div>';
-  input.value = '';
-  container.scrollTop = container.scrollHeight;
-  setTimeout(() => {
-    const responses = [
-      '就業規則によると、その件については以下のように定められています。詳細は社内ポータルの規定集をご確認ください。',
-      'マニュアルに記載がありました。該当セクションの内容をお伝えします。ご不明点があればお気軽にお聞きください。',
-      'その質問については、社内規定の第12条に関連する記載があります。具体的なお手続きについてご案内いたします。',
-    ];
-    const res = responses[Math.floor(Math.random() * responses.length)];
-    container.innerHTML += '<div class="msg ai"><div class="msg-avatar">F</div><div class="msg-bubble">' + res + '</div></div>';
-    container.scrollTop = container.scrollHeight;
-  }, 800);
 }
 
 function sendAiChat() {

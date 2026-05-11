@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 app = FastAPI(title="Founder", version="0.1.0")
 
@@ -33,6 +34,16 @@ def get_user_by_id(user_id: str) -> dict | None:
         if user["user_id"] == user_id:
             return user
     return None
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    """チャットAPIエンドポイント（仮実装）"""
+    return {"reply": f"（仮の返答）「{req.message}」についての回答です。"}
 
 
 @app.get("/")
