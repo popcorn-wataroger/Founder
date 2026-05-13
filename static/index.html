@@ -901,6 +901,7 @@ body {
   </div>
 </div>
 
+<script src="/static/js/login.js"></script>
 <script src="/static/js/chat.js"></script>
 
 <script>
@@ -909,14 +910,6 @@ function showScreen(id) {
   document.getElementById(id).classList.add('active');
 }
 
-function handleLogin() {
-  const code = document.getElementById('login-code').value.toUpperCase();
-  if (code === 'ADMIN') {
-    showScreen('screen-admin');
-  } else {
-    showScreen('screen-chat');
-  }
-}
 
 function logout() {
   showScreen('screen-login');
