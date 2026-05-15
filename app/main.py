@@ -45,6 +45,31 @@ async def chat(req: ChatRequest):
     """チャットAPIエンドポイント（仮実装）"""
     return {"reply": f"（仮の返答）「{req.message}」についての回答です。"}
 
+class LoginRequest(BaseModel):
+    employee_code: str
+    password: str
+
+
+@app.post("/api/login")
+async def login(req: LoginRequest):
+    """ログインAPIエンドポイント"""
+    # 空欄チェック
+    if not req.employee_code or not req.password:
+        return {"success": False, "message": "社員コードとパスワードを入力してください"}
+
+    # CSVからユーザーを検索
+    user = get_user_by_employee_code(req.employee_code)
+
+    # ユーザーが存在しない場合
+    if user is None:
+        return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
+
+    # パスワードチェック
+    if user["password"] != req.password:
+        return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
+
+    # ログイン成功
+    return {"success": True, "role": user["role"], "name": user["name"]}
 
 @app.get("/")
 async def root():

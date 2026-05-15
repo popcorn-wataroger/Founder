@@ -665,7 +665,7 @@ body {
 <!-- ===== LOGIN SCREEN ===== -->
 <div id="screen-login" class="screen login-screen active">
   <div class="login-box">
-    <div class="login-logo">F<span>.</span> Founder</div>
+    <div class="login-logo">Founder</div>
     <p class="login-sub">社内AIアシスタント</p>
     <div class="form-group">
       <label>社員コード</label>
@@ -901,6 +901,7 @@ body {
   </div>
 </div>
 
+<script src="/static/js/login.js"></script>
 <script src="/static/js/chat.js"></script>
 
 <script>
@@ -909,14 +910,6 @@ function showScreen(id) {
   document.getElementById(id).classList.add('active');
 }
 
-function handleLogin() {
-  const code = document.getElementById('login-code').value.toUpperCase();
-  if (code === 'ADMIN') {
-    showScreen('screen-admin');
-  } else {
-    showScreen('screen-chat');
-  }
-}
 
 function logout() {
   showScreen('screen-login');
