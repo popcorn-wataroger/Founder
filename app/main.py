@@ -71,6 +71,24 @@ async def login(req: LoginRequest):
     # ログイン成功
     return {"success": True, "role": user["role"], "name": user["name"]}
 
+@app.get("/api/admin/users")
+async def get_admin_users():
+    """管理者用スタッフ一覧APIエンドポイント"""
+    result = []
+    for user in users:
+        # ADMINは除外する
+        if user["role"] == "admin":
+            continue
+        # パスワードを含めずに必要な項目だけ返す
+        result.append({
+            "user_id": user["user_id"],
+            "employee_code": user["employee_code"],
+            "name": user["name"],
+            "department": user["department"],
+            "employment_type": user["employment_type"],
+        })
+    return result
+
 @app.get("/")
 async def root():
     return FileResponse("static/index.html")
