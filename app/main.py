@@ -40,10 +40,13 @@ class ChatRequest(BaseModel):
     message: str
 
 
-@app.post("/chat")
+@app.post("/api/chat")
 async def chat(req: ChatRequest):
-    """チャットAPIエンドポイント（仮実装）"""
-    return {"reply": f"（仮の返答）「{req.message}」についての回答です。"}
+    """チャットAPIエンドポイント（モック）"""
+    # 空メッセージチェック
+    if not req.message:
+        return {"success": False, "message": "メッセージを入力してください"}
+    return {"success": True, "reply": "（モック返答）AIがここで答えます。"}
 
 class LoginRequest(BaseModel):
     employee_code: str
