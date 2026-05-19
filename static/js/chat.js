@@ -26,7 +26,7 @@ async function sendMessage() {
   container.scrollTop = container.scrollHeight;
 
   // バックエンドのAPIを呼び出す
-  const res = await fetch("/chat", {
+  const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message: text }),
