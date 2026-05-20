@@ -918,11 +918,10 @@ function showAdminTab(tab) {
   if (tab === 'sources') {
     document.getElementById('tab-sources').style.display = 'block';
     document.querySelectorAll('.sidebar-item')[0].classList.add('active');
-  }} else if (tab === 'staff') {
+  } else if (tab === 'staff') {
     document.getElementById('tab-staff').style.display = 'block';
     document.querySelectorAll('.sidebar-item')[1].classList.add('active');
     loadStaffList();
-   }
   } else if (tab === 'detail') {
     document.getElementById('tab-detail').style.display = 'block';
     document.querySelectorAll('.sidebar-item')[1].classList.add('active');
