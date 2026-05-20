@@ -766,13 +766,7 @@ body {
       <div class="main-header">
         <h1 class="main-title">スタッフ一覧</h1>
       </div>
-      <div class="staff-grid">
-        <div class="staff-card" onclick="showStaffDetail('奥村 仁哉','営業部')"><div class="staff-avatar">奥</div><div class="staff-card-name">奥村 仁哉</div><div class="staff-card-dept">営業部</div></div>
-        <div class="staff-card" onclick="showStaffDetail('田中 美咲','企画部')"><div class="staff-avatar">田</div><div class="staff-card-name">田中 美咲</div><div class="staff-card-dept">企画部</div></div>
-        <div class="staff-card" onclick="showStaffDetail('佐藤 健太','開発部')"><div class="staff-avatar">佐</div><div class="staff-card-name">佐藤 健太</div><div class="staff-card-dept">開発部</div></div>
-        <div class="staff-card" onclick="showStaffDetail('鈴木 愛','人事部')"><div class="staff-avatar">鈴</div><div class="staff-card-name">鈴木 愛</div><div class="staff-card-dept">人事部</div></div>
-        <div class="staff-card" onclick="showStaffDetail('高橋 翔','経理部')"><div class="staff-avatar">高</div><div class="staff-card-name">高橋 翔</div><div class="staff-card-dept">経理部</div></div>
-        <div class="staff-card" onclick="showStaffDetail('山田 花子','広報部')"><div class="staff-avatar">山</div><div class="staff-card-name">山田 花子</div><div class="staff-card-dept">広報部</div></div>
+      <<div class="staff-grid" id="staff-grid">
       </div>
     </div>
 
@@ -903,6 +897,7 @@ body {
 
 <script src="/static/js/login.js"></script>
 <script src="/static/js/chat.js"></script>
+<script src="/static/js/admin.js"></script>
 
 <script>
 function showScreen(id) {
@@ -923,9 +918,11 @@ function showAdminTab(tab) {
   if (tab === 'sources') {
     document.getElementById('tab-sources').style.display = 'block';
     document.querySelectorAll('.sidebar-item')[0].classList.add('active');
-  } else if (tab === 'staff') {
+  }} else if (tab === 'staff') {
     document.getElementById('tab-staff').style.display = 'block';
     document.querySelectorAll('.sidebar-item')[1].classList.add('active');
+    loadStaffList();
+   }
   } else if (tab === 'detail') {
     document.getElementById('tab-detail').style.display = 'block';
     document.querySelectorAll('.sidebar-item')[1].classList.add('active');
