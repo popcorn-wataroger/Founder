@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: mypy
+        run: uv run mypy app/
+
+  test:
+    name: Test & Smoke Test
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: sk-dummy
+      STRIPE_PUBLISHABLE_KEY: pk_test_dummy
+      STRIPE_SECRET_KEY: sk_test_dummy
+      STRIPE_WEBHOOK_SECRET: whsec_dummy
+      QDRANT_URL: http://localhost:6333
+      FRONTEND_URL: http://localhost:8000
+      APP_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Run pytest
+        run: uv run pytest -q --tb=short
+      - name: Smoke test
+        run: |
+          uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:8000/ && echo "OK" && break
+            sleep 1
+          done || (echo "Smoke test failed: server did not respond" && exit 1)
