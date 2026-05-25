@@ -120,6 +120,34 @@ git commit -m "いろいろ変更"
 git commit -m "途中"
 ```
 
+## CI（自動チェック）
+
+PR を出すと GitHub Actions が自動で以下の3つのチェックを実行します。
+
+| ジョブ | 内容 | コマンド |
+|--------|------|---------|
+| Lint & Format | コードスタイルの確認 | `ruff check` / `ruff format --check` |
+| Type Check | 型ヒントの整合性確認 | `mypy app/` |
+| Test & Smoke Test | テスト実行＋サーバー起動確認 | `pytest` + `curl` |
+
+PR 画面の下部に緑のチェックマーク（✓）が揃ったらレビュー依頼してください。赤い ✗ が出ているときは、先に修正してから依頼します。
+
+ローカルで事前確認する場合:
+
+```bash
+uv run ruff check .                  # lint
+uv run ruff format --check .         # フォーマット確認
+uv run mypy app/                     # 型チェック
+uv run pytest -q                     # テスト
+```
+
+フォーマットのエラーは自動修正できます:
+
+```bash
+uv run ruff check --fix .
+uv run ruff format .
+```
+
 ## PR作成前チェック
 
 PR を作る前に、必ず以下を確認します。
@@ -139,6 +167,7 @@ uv run uvicorn app.main:app --reload
 - 変更内容を自分の言葉で説明できる
 - 動作確認した内容を PR に書ける
 - UI を変更した場合は `docs/ui-review.md` のチェックを実施している
+- CI（自動チェック）が全て緑になっている
 
 ## PRの書き方
 
@@ -176,17 +205,20 @@ git push origin ブランチ名
 
 ## マージ後
 
-PR がマージされたら、ローカルの `main` を更新します。
+PR がマージされると、GitHub 上のブランチは自動で削除されます。
+
+ローカルの `main` を更新し、ローカルブランチも削除します。
 
 ```bash
 git checkout main
 git pull origin main
+git branch -d ブランチ名
 ```
 
-使い終わったブランチは削除して構いません。
+リモートの削除済みブランチがローカルに残っている場合は以下で整理できます。
 
 ```bash
-git branch -d ブランチ名
+git fetch --prune
 ```
 
 ## やってはいけないこと
@@ -199,6 +231,7 @@ git branch -d ブランチ名
 - 他の人の変更を勝手に消す
 - 動作確認せずに PR を出す
 - 1つの PR に無関係な変更をたくさん入れる
+- CI が赤（✗）のままマージする
 
 ## 困ったとき
 
