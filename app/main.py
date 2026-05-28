@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -35,13 +35,15 @@ async def get_admin_users(token: dict = Depends(verify_token)):
     for user in users:
         if user["role"] == "admin":
             continue
-        result.append({
-            "user_id": user["user_id"],
-            "employee_code": user["employee_code"],
-            "name": user["name"],
-            "department": user["department"],
-            "employment_type": user["employment_type"],
-        })
+        result.append(
+            {
+                "user_id": user["user_id"],
+                "employee_code": user["employee_code"],
+                "name": user["name"],
+                "department": user["department"],
+                "employment_type": user["employment_type"],
+            }
+        )
     return result
 
 
