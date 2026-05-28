@@ -10,8 +10,8 @@ from app.users import get_user_by_employee_code
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
-# Bearerトークンを取り出す仕組み
-security = HTTPBearer()
+# Bearerトークンを取り出す仕組み（auto_error=Falseで401を自分でコントロール）
+security = HTTPBearer(auto_error=False)
 
 
 def create_access_token(user_id: str, role: str) -> str:
@@ -27,6 +27,8 @@ def create_access_token(user_id: str, role: str) -> str:
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     """JWTトークンを検証して中身を返す"""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="トークンがありません")
     try:
         payload = jwt.decode(
             credentials.credentials,
@@ -48,23 +50,17 @@ class LoginRequest(BaseModel):
 @router.post("/login")
 async def login(req: LoginRequest):
     """ログインAPIエンドポイント"""
-    # 空欄チェック
     if not req.employee_code or not req.password:
         return {"success": False, "message": "社員コードとパスワードを入力してください"}
 
-    # CSVからユーザーを検索
     user = get_user_by_employee_code(req.employee_code)
 
-    # ユーザーが存在しない場合
     if user is None:
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
 
-    # パスワードチェック
     if user["password"] != req.password:
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
 
-    # JWTトークンを生成
     token = create_access_token(user_id=user["user_id"], role=user["role"])
 
-    # ログイン成功
     return {"success": True, "role": user["role"], "name": user["name"], "token": token}
