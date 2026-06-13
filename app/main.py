@@ -1,13 +1,23 @@
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.database import init_db
 from app.routers import auth_router, stripe_router
 from app.routers.auth_router import verify_token
 from app.users import users
 
-app = FastAPI(title="Founder", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Founder", version="0.1.0", lifespan=lifespan)
 
 app.include_router(stripe_router.router)
 app.include_router(auth_router.router)
