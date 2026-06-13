@@ -33,6 +33,8 @@ async def list_sources(token: dict = Depends(require_admin)):
 @router.post("/upload")
 async def upload_source(file: UploadFile, token: dict = Depends(require_admin)):
     """ファイルをアップロードしてソースとして登録する"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="ファイル名が取得できません")
     suffix = Path(file.filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -58,7 +60,8 @@ async def upload_source(file: UploadFile, token: dict = Depends(require_admin)):
     conn = get_connection()
     cursor = conn.execute(
         """
-        INSERT INTO sources (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
+        INSERT INTO sources
+            (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
         VALUES (?, ?, ?, 'common', NULL, ?, ?)
         """,
         (file.filename, file_type, str(save_path), uploaded_at, token["user_id"]),
@@ -87,7 +90,8 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
     conn = get_connection()
     cursor = conn.execute(
         """
-        INSERT INTO sources (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
+        INSERT INTO sources
+            (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
         VALUES (?, 'url', ?, 'common', NULL, ?, ?)
         """,
         (display_name, req.url, uploaded_at, token["user_id"]),
@@ -103,9 +107,7 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
 async def delete_source(source_id: int, token: dict = Depends(require_admin)):
     """ソースを削除する"""
     conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM sources WHERE source_id = ?", (source_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM sources WHERE source_id = ?", (source_id,)).fetchone()
 
     if row is None:
         conn.close()
