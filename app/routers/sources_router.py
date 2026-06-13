@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.database import get_connection
@@ -30,9 +30,28 @@ async def list_sources(token: dict = Depends(require_admin)):
     return [dict(row) for row in rows]
 
 
+VALID_SCOPES = {"common", "individual"}
+
+
+def validate_scope(scope: str, owner_user_id: str | None) -> None:
+    if scope not in VALID_SCOPES:
+        raise HTTPException(
+            status_code=400,
+            detail="scope は common または individual を指定してください",
+        )
+    if scope == "individual" and not owner_user_id:
+        raise HTTPException(status_code=400, detail="individual の場合は owner_user_id が必須です")
+
+
 @router.post("/upload")
-async def upload_source(file: UploadFile, token: dict = Depends(require_admin)):
+async def upload_source(
+    file: UploadFile,
+    scope: str = Form("common"),
+    owner_user_id: str | None = Form(None),
+    token: dict = Depends(require_admin),
+):
     """ファイルをアップロードしてソースとして登録する"""
+    validate_scope(scope, owner_user_id)
     if not file.filename:
         raise HTTPException(status_code=400, detail="ファイル名が取得できません")
     suffix = Path(file.filename).suffix.lower()
@@ -62,9 +81,17 @@ async def upload_source(file: UploadFile, token: dict = Depends(require_admin)):
         """
         INSERT INTO sources
             (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-        VALUES (?, ?, ?, 'common', NULL, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (file.filename, file_type, str(save_path), uploaded_at, token["user_id"]),
+        (
+            file.filename,
+            file_type,
+            str(save_path),
+            scope,
+            owner_user_id,
+            uploaded_at,
+            token["user_id"],
+        ),
     )
     conn.commit()
     source_id = cursor.lastrowid
@@ -76,11 +103,14 @@ async def upload_source(file: UploadFile, token: dict = Depends(require_admin)):
 class UrlRequest(BaseModel):
     url: str
     file_name: str | None = None
+    scope: str = "common"
+    owner_user_id: str | None = None
 
 
 @router.post("/url")
 async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
     """URLをソースとして登録する"""
+    validate_scope(req.scope, req.owner_user_id)
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="有効なURLを入力してください")
 
@@ -92,9 +122,9 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
         """
         INSERT INTO sources
             (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-        VALUES (?, 'url', ?, 'common', NULL, ?, ?)
+        VALUES (?, 'url', ?, ?, ?, ?, ?)
         """,
-        (display_name, req.url, uploaded_at, token["user_id"]),
+        (display_name, req.url, req.scope, req.owner_user_id, uploaded_at, token["user_id"]),
     )
     conn.commit()
     source_id = cursor.lastrowid
