@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.database import init_db
-from app.routers import auth_router, stripe_router
+from app.routers import auth_router, sources_router, stripe_router
 from app.routers.auth_router import verify_token
 from app.users import users
 
@@ -21,6 +21,7 @@ app = FastAPI(title="Founder", version="0.1.0", lifespan=lifespan)
 
 app.include_router(stripe_router.router)
 app.include_router(auth_router.router)
+app.include_router(sources_router.router)
 
 # 静的ファイル配信
 app.mount("/static", StaticFiles(directory="static"), name="static")
