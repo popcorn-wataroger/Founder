@@ -367,6 +367,7 @@ body {
   cursor: pointer;
 }
 .upload-zone:hover { border-color: var(--accent); background: var(--accent-light); }
+.upload-zone.dragover { border-color: var(--accent); background: var(--accent-light); }
 .upload-icon { font-size: 32px; margin-bottom: 8px; color: var(--text-secondary); }
 .upload-text { font-size: 14px; color: var(--text-secondary); margin-bottom: 4px; }
 .upload-hint { font-size: 11px; color: #aaa; }
@@ -406,7 +407,44 @@ body {
 .tag-individual { background: var(--accent-light); color: var(--accent); }
 .tag-pdf { background: #FEF0ED; color: #C0462E; }
 .tag-pptx { background: #FFF4E6; color: #B87517; }
+.tag-docx { background: #EAF1FB; color: #1B5FA5; }
+.tag-txt { background: #EFEEE9; color: #6B6B80; }
 .tag-url { background: #E6F1FB; color: #185FA5; }
+
+/* ソース管理の操作パネル（種別選択・URL登録・ステータス） */
+.source-controls { display: flex; gap: 20px; align-items: flex-end; margin-bottom: 16px; }
+.source-control-group label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.source-control-group select {
+  padding: 8px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 14px;
+  color: var(--text);
+  min-width: 180px;
+}
+.source-control-group select:focus { outline: none; border-color: var(--accent); }
+.url-register { display: flex; gap: 10px; margin: 16px 0; }
+.url-register input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 14px;
+  color: var(--text);
+}
+.url-register input:focus { outline: none; border-color: var(--accent); }
+.source-status { font-size: 13px; min-height: 18px; margin-bottom: 12px; }
+.source-status.loading { color: var(--text-secondary); }
+.source-status.error { color: var(--accent); }
+.source-status.success { color: var(--teal); }
+
 .delete-btn {
   color: #ccc;
   cursor: pointer;
@@ -739,25 +777,48 @@ body {
     <div id="tab-sources">
       <div class="main-header">
         <h1 class="main-title">ソース管理</h1>
-        <button class="btn btn-primary" onclick="alert('ファイル選択ダイアログ（実装時）')">+ アップロード</button>
+        <button class="btn btn-primary" onclick="document.getElementById('source-file-input').click()">+ アップロード</button>
       </div>
-      <div class="upload-zone" onclick="alert('ファイル選択ダイアログ（実装時）')">
+
+      <!-- 種別・対象社員の選択（アップロード・URL登録の両方で共通） -->
+      <div class="source-controls">
+        <div class="source-control-group">
+          <label for="source-scope">種別</label>
+          <select id="source-scope" onchange="onScopeChange()">
+            <option value="common">全社共通</option>
+            <option value="individual">社員個別</option>
+          </select>
+        </div>
+        <div class="source-control-group" id="source-owner-group" style="display:none">
+          <label for="source-owner">対象社員</label>
+          <select id="source-owner"></select>
+        </div>
+      </div>
+
+      <!-- ファイルアップロードゾーン（クリックで隠しinputを開く） -->
+      <input type="file" id="source-file-input" accept=".pdf,.docx,.pptx,.txt" style="display:none" onchange="uploadSource(this.files[0])">
+      <div class="upload-zone" id="source-drop-zone" onclick="document.getElementById('source-file-input').click()" ondragover="onSourceDragOver(event)" ondragleave="onSourceDragLeave(event)" ondrop="onSourceDrop(event)">
         <div class="upload-icon">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         </div>
         <div class="upload-text">ファイルをドロップ、またはクリックして選択</div>
-        <div class="upload-hint">PDF, Word, PowerPoint, テキスト, URL に対応</div>
+        <div class="upload-hint">PDF, Word, PowerPoint, テキスト に対応</div>
       </div>
+
+      <!-- URL登録 -->
+      <div class="url-register">
+        <input type="url" id="source-url-input" placeholder="https://example.com/page">
+        <button class="btn btn-outline" onclick="registerUrl()">＋ URLを追加</button>
+      </div>
+
+      <!-- 処理中・エラー表示エリア -->
+      <div id="source-status" class="source-status"></div>
+
       <table class="source-table">
         <thead>
           <tr><th>ファイル名</th><th>形式</th><th>種別</th><th>対象</th><th>登録日</th><th></th></tr>
         </thead>
-        <tbody>
-          <tr><td>就業規則_2025.pdf</td><td><span class="tag tag-pdf">PDF</span></td><td><span class="tag tag-common">共通</span></td><td>—</td><td>2025.4.1</td><td><button class="delete-btn">×</button></td></tr>
-          <tr><td>新入社員マニュアル.pdf</td><td><span class="tag tag-pdf">PDF</span></td><td><span class="tag tag-common">共通</span></td><td>—</td><td>2025.4.1</td><td><button class="delete-btn">×</button></td></tr>
-          <tr><td>Q1_評価レポート.pptx</td><td><span class="tag tag-pptx">PPTX</span></td><td><span class="tag tag-individual">個別</span></td><td>奥村 仁哉</td><td>2025.4.15</td><td><button class="delete-btn">×</button></td></tr>
-          <tr><td>https://company.com/wiki</td><td><span class="tag tag-url">URL</span></td><td><span class="tag tag-common">共通</span></td><td>—</td><td>2025.3.20</td><td><button class="delete-btn">×</button></td></tr>
-        </tbody>
+        <tbody id="source-tbody"></tbody>
       </table>
     </div>
 
@@ -918,6 +979,7 @@ function showAdminTab(tab) {
   if (tab === 'sources') {
     document.getElementById('tab-sources').style.display = 'block';
     document.querySelectorAll('.sidebar-item')[0].classList.add('active');
+    loadSources();
   } else if (tab === 'staff') {
     document.getElementById('tab-staff').style.display = 'block';
     document.querySelectorAll('.sidebar-item')[1].classList.add('active');

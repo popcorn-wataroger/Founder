@@ -24,9 +24,14 @@ async function handleLogin() {
     return;
   }
 
-  // ログイン成功 → roleに応じて画面を切り替える
+  // ログイン成功 → トークンを保存し、roleに応じて画面を切り替える
+  // 保存したトークンは、以降のadmin API呼び出しで認証ヘッダに付ける
+  localStorage.setItem("token", data.token);
+
   if (data.role === "admin") {
     showScreen("screen-admin");
+    // 管理者ホームの初期タブ（ソース管理）を描画する
+    initSourceManagement();
   } else {
     showScreen("screen-chat");
   }
