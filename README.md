@@ -15,7 +15,7 @@
 |------|------|
 | フロントエンド | HTML / CSS / JavaScript（バニラ） |
 | バックエンド | Python / FastAPI |
-| AI | OpenAI API |
+| AI | Gemini API |
 | ベクトルDB | Qdrant |
 | ストレージ | Google Cloud Storage |
 | ホスティング | GCP（Cloud Run + Cloud SQL） |
@@ -25,7 +25,7 @@
 ```bash
 uv sync
 cp .env.example .env
-# .env を編集して OPENAI_API_KEY 等を設定
+# .env を編集して GEMINI_API_KEY 等を設定
 uv run uvicorn app.main:app --reload
 ```
 

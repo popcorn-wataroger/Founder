@@ -18,7 +18,7 @@ uv add <package>
 
 - フロントエンド: HTML / CSS / JavaScript（バニラ。フレームワーク不使用）
 - バックエンド: Python 3.11+ / FastAPI
-- AI: OpenAI API（GPT-4o）
+- AI: Gemini API
 - ベクトルDB: Qdrant
 - ファイルストレージ: Google Cloud Storage
 - ホスティング: GCP（Cloud Run + Cloud SQL）

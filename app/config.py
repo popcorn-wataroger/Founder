@@ -15,3 +15,6 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8000")
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-secret-key")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 8
+
+# Gemini
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
