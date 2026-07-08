@@ -7,8 +7,11 @@ embedding（ベクトル化）や Qdrant への保存は後続ステップで追
 import requests
 from bs4 import BeautifulSoup
 from docx import Document
+from google import genai
 from pptx import Presentation
 from pypdf import PdfReader
+
+from app.config import GEMINI_API_KEY
 
 # URL取得時のタイムアウト秒数（応答が無いURLで固まらないための保険）
 URL_TIMEOUT = 10
@@ -16,6 +19,13 @@ URL_TIMEOUT = 10
 # チャンク分割の設定（Issue #19 の完了条件）
 CHUNK_SIZE = 500  # 1チャンクの最大文字数
 CHUNK_OVERLAP = 100  # 隣り合うチャンク間で重ねる文字数
+
+# embedding（ベクトル化）に使う Gemini のモデル名
+# 後で「どのモデルを使ったか」を確認できるよう定数として持たせる
+EMBEDDING_MODEL = "gemini-embedding-001"
+
+# Gemini APIクライアント。APIキーは config 経由で読み込む（コードに直書きしない）
+_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def extract_text(path: str, file_type: str) -> str:
@@ -132,3 +142,29 @@ def split_into_chunks(text: str) -> list[str]:
         start += step
 
     return chunks
+
+
+def embed_text(text: str) -> list[float]:
+    """1チャンクのテキストを数値ベクトル（embedding）に変換する。
+
+    入力:
+        text … ベクトル化したいテキスト（通常はチャンク1つ）
+
+    出力:
+        数値（float）のリスト＝ベクトル。
+        gemini-embedding-001 は既定で3072次元のベクトルを返す。
+        実際の次元数は len(戻り値) で後から確認できる。
+
+    処理:
+        Gemini の embedding 用モデルにテキストを渡し、
+        「意味」を表す数値の並びを受け取る。
+        この数値の近さ同士を比べることで、後段のRAGで
+        質問に意味が近いチャンクを検索できるようになる。
+    """
+    # Gemini にテキストを送ってベクトルを生成してもらう
+    result = _client.models.embed_content(
+        model=EMBEDDING_MODEL,
+        contents=text,
+    )
+    # 戻り値は embedding のリスト。今回は1件なので先頭の数値列(values)を返す
+    return result.embeddings[0].values
