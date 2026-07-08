@@ -13,6 +13,10 @@ from pypdf import PdfReader
 # URL取得時のタイムアウト秒数（応答が無いURLで固まらないための保険）
 URL_TIMEOUT = 10
 
+# チャンク分割の設定（Issue #19 の完了条件）
+CHUNK_SIZE = 500  # 1チャンクの最大文字数
+CHUNK_OVERLAP = 100  # 隣り合うチャンク間で重ねる文字数
+
 
 def extract_text(path: str, file_type: str) -> str:
     """ソースから本文テキストを取り出す。
@@ -88,3 +92,43 @@ def _extract_url(url: str) -> str:
 
     # 表示テキストだけを取り出す
     return soup.get_text(separator="\n", strip=True)
+
+
+def split_into_chunks(text: str) -> list[str]:
+    """本文テキストをチャンク（小さな塊）のリストに分割する。
+
+    入力:
+        text … 分割したい本文テキスト
+
+    出力:
+        チャンク文字列のリスト
+
+    なぜ分割するか:
+        長文をそのままベクトル化すると要点がぼやけ、検索精度が落ちる。
+        500文字ごとの小さな塊に分けることで、質問に近い部分だけを探しやすくする。
+
+    なぜ重ねる（オーバーラップ）か:
+        区切り目で文が途中に切れると意味が失われる。
+        前のチャンクの末尾100文字を次のチャンクの先頭に重ねることで、
+        文脈が境界で途切れるのを防ぐ。
+    """
+    # 空文字なら分割対象がないので空リストを返す
+    if not text:
+        return []
+
+    # 次のチャンク開始位置をどれだけ進めるか（500 - 100 = 400文字ずつ前進）
+    step = CHUNK_SIZE - CHUNK_OVERLAP
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        # 現在位置から最大500文字を1チャンクとして切り出す
+        end = start + CHUNK_SIZE
+        chunks.append(text[start:end])
+        # 末尾まで到達したら終了（重複した余分なチャンクを作らない）
+        if end >= len(text):
+            break
+        # オーバーラップ分を残して開始位置を前進させる
+        start += step
+
+    return chunks
