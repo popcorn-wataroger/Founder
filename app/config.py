@@ -18,3 +18,7 @@ JWT_EXPIRE_HOURS = 8
 
 # Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Qdrant（ベクトルDB）の接続情報。値は .env から読み込む（コードに直書きしない）
+QDRANT_URL = os.getenv("QDRANT_URL", "")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
