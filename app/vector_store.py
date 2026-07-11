@@ -10,6 +10,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from app.config import QDRANT_API_KEY, QDRANT_URL
+from app.vectorizer import embed_text
 
 # コレクション名。Qdrant上で「棚」を識別する名前
 COLLECTION_NAME = "founder"
@@ -114,3 +115,38 @@ def save_chunks(
     _client.upsert(collection_name=COLLECTION_NAME, points=points)
 
     return ids
+
+
+def search(question: str, top_k: int = 3) -> list[str]:
+    """質問に意味が近いチャンクの元テキストを、上位から返す。
+
+    入力:
+        question … ユーザーからの質問文
+        top_k    … 上位何件を返すか（既定は3件）
+
+    出力:
+        質問に近い順に並んだ「元テキスト」のリスト（最大 top_k 件）
+
+    処理:
+        1. 質問を embed_text でベクトル化する（保存時と同じモデルなので比較できる）
+        2. founder コレクションで、そのベクトルに近いポイントを top_k 件検索する
+        3. 各ヒットの payload から元テキスト(text)を取り出してリストで返す
+
+    なぜベクトルで検索できるか:
+        保存時に各チャンクを同じ方法でベクトル化してある。
+        質問も同じ方法でベクトル化し、cosine距離が近いもの＝意味が近いものを探す。
+    """
+    # 1. 質問を、保存時と同じ embedding モデルでベクトル化する
+    query_vector = embed_text(question)
+
+    # 2. そのベクトルに近いポイントを top_k 件検索する
+    #    with_payload=True で、ヒットしたポイントに紐づく元テキスト等も一緒に取得する
+    response = _client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=query_vector,
+        limit=top_k,
+        with_payload=True,
+    )
+
+    # 3. 各ヒットの payload から元テキストを取り出す（保存時に "text" キーで入れてある）
+    return [point.payload["text"] for point in response.points]
