@@ -26,10 +26,16 @@ async function sendMessage() {
   container.scrollTop = container.scrollHeight;
 
   // バックエンドのAPIを呼び出す
+  // 認証必須のため、ログイン時に localStorage へ保存したトークンを
+  // Authorization ヘッダーで送る（他の認証済みAPIと同じ方法）。
+  // ボディのキーは chat_router の ChatRequest.question に合わせる。
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: text }),
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${localStorage.getItem("token")}`,
+    },
+    body: JSON.stringify({ question: text }),
   });
   const data = await res.json();
 

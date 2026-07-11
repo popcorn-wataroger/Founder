@@ -10,8 +10,10 @@ from google import genai
 from app.config import GEMINI_API_KEY
 from app.vector_store import search
 
-# 回答の文章生成に使う Gemini のモデル名（速度・コストのバランスがよい flash 系）
-GENERATION_MODEL = "gemini-2.5-flash"
+# 回答の文章生成に使う Gemini のモデル名。
+# "gemini-flash-latest" は常に現行の flash モデルを指すエイリアスで、
+# 特定バージョンが提供終了(404)しても影響を受けにくい。
+GENERATION_MODEL = "gemini-flash-latest"
 
 # 検索で取ってくる関連チャンクの件数（多すぎるとノイズ、少なすぎると情報不足）
 TOP_K = 3
