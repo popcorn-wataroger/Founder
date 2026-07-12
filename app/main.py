@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from app.database import init_db
 from app.routers import auth_router, chat_router, sources_router, stripe_router
-from app.routers.auth_router import verify_token
+from app.routers.auth_router import require_admin
 from app.users import users
 
 
@@ -43,8 +43,15 @@ async def chat(req: ChatRequest):
 
 
 @app.get("/api/admin/users")
-async def get_admin_users(token: dict = Depends(verify_token)):
-    """管理者用スタッフ一覧APIエンドポイント（要認証）"""
+async def get_admin_users(token: dict = Depends(require_admin)):
+    """管理者用スタッフ一覧APIエンドポイント（社長のみ）。
+
+    権限について:
+        require_admin を付けているので、社員が叩くと403で拒否される。
+        以前は verify_token だけだったため、ログインさえしていれば社員でも
+        全社員の氏名・部署・雇用形態を取得できてしまっていた。
+        スタッフ一覧は社長だけが見る画面なので、管理者チェックが必須。
+    """
     result = []
     for user in users:
         if user["role"] == "admin":
