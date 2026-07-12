@@ -234,7 +234,19 @@ class UrlRequest(BaseModel):
 
 @router.post("/url")
 async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
-    """URLをソースとして登録する"""
+    """URLをソースとして登録し、AIが検索できるようベクトル化する。
+
+    処理:
+        1. 入力チェック（scope、URLの形式）
+        2. sources テーブルに登録し、source_id を採番する
+        3. URLのページから本文を取り出してベクトル化し、Qdrantに保存する
+        4. 3が失敗したら、2のDB登録を取り消して（ロールバック）エラーを返す
+
+    ファイルアップロードとの違い:
+        URLの場合は実ファイルを保存しないので、file_path にはURLをそのまま入れる。
+        ロールバック時も消すファイルが無いため、_rollback_source に save_path=None を渡す。
+        本文の取得は extract_text が file_type='url' としてページを取りに行く。
+    """
     validate_scope(req.scope, req.owner_user_id)
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="有効なURLを入力してください")
@@ -255,7 +267,32 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
     source_id = cursor.lastrowid
     conn.close()
 
-    return {"success": True, "source_id": source_id, "url": req.url}
+    # URLのページ本文を取り出してベクトル化し、Qdrantに保存する
+    # （ここまで成功して初めて「登録完了」。ファイルアップロードと同じ扱い）
+    try:
+        chunk_count = _vectorize_and_save(
+            source_id=source_id,
+            path=req.url,  # URLの場合、本文の取得元はURLそのもの
+            file_type="url",
+            scope=req.scope,
+            owner_user_id=req.owner_user_id,
+        )
+    except Exception:
+        # 失敗したら、直前のDB登録を取り消して登録前の状態に戻す
+        # URLは実ファイルを保存していないので save_path は None
+        logger.exception("ベクトル化に失敗しました。URL登録を取り消します source_id=%s", source_id)
+        _rollback_source(source_id, None)
+        raise HTTPException(
+            status_code=500,
+            detail="URLの読み取りまたはベクトル化に失敗しました。ソースは登録されていません",
+        )
+
+    return {
+        "success": True,
+        "source_id": source_id,
+        "url": req.url,
+        "chunk_count": chunk_count,
+    }
 
 
 @router.delete("/{source_id}")
