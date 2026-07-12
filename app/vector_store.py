@@ -7,7 +7,15 @@
 import uuid
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PayloadSchemaType,
+    PointStruct,
+    VectorParams,
+)
 
 from app.config import QDRANT_API_KEY, QDRANT_URL
 from app.vectorizer import embed_text
@@ -27,34 +35,48 @@ _client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 
 
 def ensure_collection() -> None:
-    """コレクション（棚）が無ければ作る。あれば何もしない。
+    """コレクション（棚）と、絞り込み用インデックスを用意する。
 
     入力:
         なし
 
     出力:
-        なし（Qdrant側にコレクションが用意された状態になる）
+        なし（Qdrant側にコレクションとインデックスが用意された状態になる）
 
     処理:
         1. 既存コレクション一覧を取得し、"sources" が既にあるか調べる
-        2. 無ければ、3072次元・cosine距離のコレクションを新規作成する
-        3. あれば作らない（何度呼んでも安全に動く＝冪等）
+        2. 無ければ、3072次元・cosine距離のコレクションを新規作成する（あれば作らない）
+        3. scope と owner_user_id に payload インデックスを張る（既にあれば何も起きない）
+
+    なぜ payload インデックスが要るか:
+        Qdrant は、インデックスの無いキーでの絞り込み検索を拒否する（400エラーになる）。
+        search で scope による権限フィルタを掛けるので、scope にインデックスが必須。
+        owner_user_id も、将来「特定社員の個別ソースだけ検索する」際に同じ理由で必要になる。
 
     なぜ冪等にするか:
         アプリ起動のたびに呼んでも、既存コレクションを壊さない・重複作成しないため。
+        インデックス作成も、既存コレクションに対して毎回張り直しにならないよう Qdrant 側が
+        同じ設定なら何もしない。そのため return より前に置いて、
+        「コレクションは既にあるがインデックスだけ無い」状態も自動で直せるようにしている。
     """
     # 既存コレクション名の一覧を集める
     existing = {c.name for c in _client.get_collections().collections}
 
-    # 既に "sources" があれば、何もせず終了
-    if COLLECTION_NAME in existing:
-        return
-
     # 無ければ、次元数と距離を指定してコレクションを新規作成する
-    _client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(size=VECTOR_SIZE, distance=DISTANCE),
-    )
+    if COLLECTION_NAME not in existing:
+        _client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(size=VECTOR_SIZE, distance=DISTANCE),
+        )
+
+    # 絞り込み検索に使うキーへインデックスを張る
+    # KEYWORD = 完全一致で絞り込む文字列型（"common" などのラベル向き）
+    for field_name in ("scope", "owner_user_id"):
+        _client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name=field_name,
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
 
 
 def save_chunks(
@@ -135,24 +157,30 @@ def save_chunks(
     return ids
 
 
-def search(question: str, top_k: int = 3) -> list[str]:
-    """質問に意味が近いチャンクの元テキストを、上位から返す。
+def search(question: str, role: str, top_k: int = 3) -> list[dict]:
+    """質問に意味が近いチャンクを、権限に応じた範囲から上位順に返す。
 
     入力:
         question … ユーザーからの質問文
+        role     … 質問した人の役割。'admin'（社長）か 'employee'（社員）
         top_k    … 上位何件を返すか（既定は3件）
 
     出力:
-        質問に近い順に並んだ「元テキスト」のリスト（最大 top_k 件）
+        質問に近い順に並んだ辞書のリスト（最大 top_k 件）
+        例: [{"text": "本文...", "source_id": "12"}, ...]
+        source_id も返すのは、どのソースを根拠に回答したかを記録・表示するため。
 
     処理:
         1. 質問を embed_text でベクトル化する（保存時と同じモデルなので比較できる）
-        2. sources コレクションで、そのベクトルに近いポイントを top_k 件検索する
-        3. 各ヒットの payload から元テキスト(text)を取り出してリストで返す
+        2. role から検索範囲の絞り込み条件（フィルタ）を組み立てる
+        3. sources コレクションで、そのベクトルに近いポイントを top_k 件検索する
+        4. 各ヒットの payload から text と source_id を取り出して返す
 
-    権限について:
-        現時点では全チャンクが検索対象。payload に scope / owner_user_id を持たせたので、
-        後続ステップでここに権限フィルタ（社員なら scope='common' のみ）を追加する。
+    権限について（重要）:
+        社員(admin以外)の検索では scope=='common' のチャンクだけを対象にする。
+        こうしないと、他人の人事評価や給与などの個別ソース(scope='individual')が
+        検索でヒットし、AIの回答に混ざってしまう。ここが情報漏洩を防ぐ最後の砦になる。
+        社長(admin)はフィルタを掛けず、共通・個別すべてのソースを検索できる。
 
     なぜベクトルで検索できるか:
         保存時に各チャンクを同じ方法でベクトル化してある。
@@ -161,14 +189,33 @@ def search(question: str, top_k: int = 3) -> list[str]:
     # 1. 質問を、保存時と同じ embedding モデルでベクトル化する
     query_vector = embed_text(question)
 
-    # 2. そのベクトルに近いポイントを top_k 件検索する
+    # 2. 権限に応じた検索範囲の絞り込み条件を作る
+    if role == "admin":
+        # 社長は全ソースを検索できるので、絞り込みなし
+        query_filter = None
+    else:
+        # 社員は共通ソースのみ。payload の scope が "common" のものだけを検索対象にする
+        # （must = すべての条件を満たすもの、の意味）
+        query_filter = Filter(
+            must=[FieldCondition(key="scope", match=MatchValue(value="common"))]
+        )
+
+    # 3. そのベクトルに近いポイントを top_k 件検索する
+    #    query_filter を渡すと、条件に合うポイントの中だけで「近いもの」を探す
     #    with_payload=True で、ヒットしたポイントに紐づく元テキスト等も一緒に取得する
     response = _client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
+        query_filter=query_filter,
         limit=top_k,
         with_payload=True,
     )
 
-    # 3. 各ヒットの payload から元テキストを取り出す（保存時に "text" キーで入れてある）
-    return [point.payload["text"] for point in response.points]
+    # 4. 各ヒットの payload から本文と、その根拠となったソースIDを取り出す
+    return [
+        {
+            "text": point.payload["text"],
+            "source_id": point.payload["source_id"],
+        }
+        for point in response.points
+    ]

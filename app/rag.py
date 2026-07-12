@@ -53,38 +53,53 @@ def _build_prompt(question: str, chunks: list[str]) -> str:
     )
 
 
-def answer_question(question: str) -> str:
-    """質問を受け取り、社内文書に基づいたAIの回答文を返す（RAGの中核）。
+def answer_question(question: str, role: str) -> tuple[str, list[str]]:
+    """質問を受け取り、社内文書に基づいたAIの回答文と参照ソースIDを返す（RAGの中核）。
 
     入力:
         question … ユーザーからの質問テキスト
+        role     … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
 
     出力:
-        AIが生成した回答の文章（文字列）
+        (回答文, 参照した source_id のリスト) のタプル
+        例: ("週3日までです。", ["12", "15"])
+        関連チャンクが0件のときは (定型メッセージ, []) を返す。
 
     処理:
-        1. vector_store.search で質問に関連するチャンクを取得
-        2. 関連チャンクが0件なら、定型メッセージを返して終了
-        3. 関連チャンクと質問からプロンプトを組み立てる
-        4. Gemini の文章生成モデルに渡して回答を生成
-        5. 生成された回答テキストを返す
+        1. vector_store.search に role を渡し、権限に応じた範囲で関連チャンクを取得
+        2. 関連チャンクが0件なら、定型メッセージと空リストを返して終了
+        3. ヒットしたチャンクから参照ソースIDを重複を除いて集める
+        4. 関連チャンクと質問からプロンプトを組み立てる
+        5. Gemini の文章生成モデルに渡して回答を生成
+        6. 回答テキストと参照ソースIDのリストを返す
+
+    なぜ role を検索まで渡すか:
+        社員には共通ソースだけを検索させるため。ここで絞らないと、
+        他人の個別ソース（評価・給与など）が回答の根拠に混ざってしまう。
     """
-    # 1. 質問に意味が近い社内文書のチャンクを検索する
-    chunks = search(question, top_k=TOP_K)
+    # 1. 質問に意味が近い社内文書のチャンクを、権限に応じた範囲から検索する
+    #    戻り値は [{"text": 本文, "source_id": ソースID}, ...] の形
+    hits = search(question, role=role, top_k=TOP_K)
 
     # 2. 関連する文書が1件も無ければ、無理に生成せず定型文を返す
     #    （根拠が無いのにAIが答えると、誤情報を生みやすいため）
-    if not chunks:
-        return NO_CONTEXT_MESSAGE
+    #    参照ソースも無いので空リストを返す
+    if not hits:
+        return NO_CONTEXT_MESSAGE, []
 
-    # 3. 参考文書＋質問をまとめたプロンプトを作る
+    # 3. 回答の根拠になったソースIDを集める（同じソースの複数チャンクがヒットするため重複を除く）
+    #    dict.fromkeys を使うと、重複を除きつつ元の順番（関連度が高い順）を保てる
+    referenced_sources = list(dict.fromkeys(hit["source_id"] for hit in hits))
+
+    # 4. 参考文書＋質問をまとめたプロンプトを作る（プロンプトには本文だけを渡す）
+    chunks = [hit["text"] for hit in hits]
     prompt = _build_prompt(question, chunks)
 
-    # 4. Gemini にプロンプトを渡し、回答文を生成してもらう
+    # 5. Gemini にプロンプトを渡し、回答文を生成してもらう
     response = _client.models.generate_content(
         model=GENERATION_MODEL,
         contents=prompt,
     )
 
-    # 5. 生成された回答テキストを返す
-    return response.text
+    # 6. 回答テキストと、その根拠になったソースIDのリストを返す
+    return response.text, referenced_sources
