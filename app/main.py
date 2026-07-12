@@ -23,6 +23,8 @@ app.include_router(stripe_router.router)
 app.include_router(auth_router.router)
 app.include_router(sources_router.router)
 app.include_router(chat_router.router)
+# 管理者専用のチャット履歴API（/api/admin/users/{user_id}/chat-sessions）
+app.include_router(chat_router.admin_router)
 
 # 静的ファイル配信
 app.mount("/static", StaticFiles(directory="static"), name="static")

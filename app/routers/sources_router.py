@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.database import get_connection
-from app.routers.auth_router import verify_token
+from app.routers.auth_router import require_admin
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
 from app.vectorizer import embed_text, extract_text, split_into_chunks
 
@@ -17,13 +17,6 @@ logger = logging.getLogger(__name__)
 UPLOAD_DIR = Path("uploads")
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
-
-
-def require_admin(token: dict = Depends(verify_token)) -> dict:
-    """管理者以外は403を返す"""
-    if token.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="管理者のみ操作できます")
-    return token
 
 
 @router.get("")
