@@ -1,9 +1,13 @@
 """RAG（検索拡張生成）のまとめ役モジュール。
 
-「質問 → 関連チャンク検索 → Geminiで回答生成」という一連の流れを、
-1つの関数 answer_question にまとめている。
-チャットAPI（ルーター）は後続ステップで、この関数を呼び出す形で実装する。
+「質問 → 関連チャンク検索 → Geminiで回答生成」という一連の流れをまとめている。
+
+回答の返し方は2種類ある:
+    answer_question        … 全文が生成されるまで待ち、完成した文字列を返す（一括）
+    answer_question_stream … 生成された端から少しずつ返す（ストリーミング／SSE用）
 """
+
+from collections.abc import Iterator
 
 from google import genai
 
@@ -103,3 +107,67 @@ def answer_question(question: str, role: str) -> tuple[str, list[str]]:
 
     # 6. 回答テキストと、その根拠になったソースIDのリストを返す
     return response.text, referenced_sources
+
+
+def answer_question_stream(
+    question: str, role: str
+) -> tuple[list[str], Iterator[str]]:
+    """質問を受け取り、参照ソースIDと「回答を少しずつ生み出す入れ物」を返す（ストリーミング版）。
+
+    入力:
+        question … ユーザーからの質問テキスト
+        role     … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
+
+    出力:
+        (参照した source_id のリスト, 回答テキストの断片を順に取り出せるイテレータ)
+
+        1つ目はすぐに確定する（検索は一瞬で終わるため）。
+        2つ目は「これから生成される文章の断片が順に出てくる入れ物」で、
+        呼び出し元が for で回した瞬間にGeminiが少しずつ文章を作って返してくる。
+
+    answer_question との違い:
+        answer_question は全文が完成するまで待ってから1つの文字列を返す。
+        こちらは generate_content_stream を使い、生成された端から断片を渡す。
+        画面に「文字が少しずつ出てくる」表示ができるようになり、体感の待ち時間が減る。
+
+    処理:
+        1. vector_store.search に role を渡し、権限に応じた範囲で関連チャンクを取得
+        2. 関連チャンクが0件なら、定型メッセージを1回だけ流して終わる（生成はしない）
+        3. ヒットしたチャンクから参照ソースIDを重複を除いて集める
+        4. 関連チャンクと質問からプロンプトを組み立てる
+        5. Gemini のストリーミング生成を回し、断片が届くたびに1つずつ渡す
+
+    なぜ (ソースID, イテレータ) のタプルで返すか:
+        SSEでは「参照ソースは最初に1回」「本文は断片を連続で」送りたい。
+        ソースIDは検索の時点で確定しているので先に確定値として返し、
+        本文は「あとで少しずつ取り出せる形」で渡すことで、呼び出し元が
+        送信順（sources → token → done）を自由に組み立てられる。
+    """
+    # 1. 質問に意味が近い社内文書のチャンクを、権限に応じた範囲から検索する
+    hits = search(question, role=role, top_k=TOP_K)
+
+    # 2. 関連する文書が1件も無ければ、生成せず定型文を1回だけ流して終わる
+    #    参照ソースも無いので空リストを返す
+    if not hits:
+        return [], iter([NO_CONTEXT_MESSAGE])
+
+    # 3. 回答の根拠になったソースIDを集める（重複を除きつつ、関連度が高い順を保つ）
+    referenced_sources = list(dict.fromkeys(hit["source_id"] for hit in hits))
+
+    # 4. 参考文書＋質問をまとめたプロンプトを作る（プロンプトには本文だけを渡す）
+    chunks = [hit["text"] for hit in hits]
+    prompt = _build_prompt(question, chunks)
+
+    def generate_chunks() -> Iterator[str]:
+        # Gemini のストリーミング生成。for で回すたびに、生成された断片が順に届く
+        for chunk in _client.models.generate_content_stream(
+            model=GENERATION_MODEL,
+            contents=prompt,
+        ):
+            # 断片には本文が入らないこともある（安全性の判定情報だけ等）ので、
+            # 中身がある断片だけを呼び出し元へ渡す
+            if chunk.text:
+                yield chunk.text
+
+    # 5. 参照ソースIDは確定値として、本文は「これから少しずつ出てくる入れ物」として返す
+    return referenced_sources, generate_chunks()

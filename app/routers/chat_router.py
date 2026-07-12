@@ -1,6 +1,8 @@
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.chat_history import (
@@ -10,7 +12,7 @@ from app.chat_history import (
     get_session_owner,
     get_sessions,
 )
-from app.rag import answer_question
+from app.rag import answer_question, answer_question_stream
 from app.routers.auth_router import require_admin, verify_token
 
 # チャット関連のAPIをまとめるルーター。URLは /api/chat から始まる
@@ -49,6 +51,53 @@ class SessionRequest(BaseModel):
     context_type: str = "general"
 
 
+def _resolve_session(requested_session_id: int | None, user_id: str) -> int | None:
+    """会話をどのセッションに記録するかを決める（POST /api/chat と /api/chat/stream で共用）。
+
+    入力:
+        requested_session_id … リクエストで指定された session_id（未指定なら None）
+        user_id              … トークンから取り出した、質問した本人の user_id
+
+    出力:
+        記録先の session_id。セッションを用意できなかった場合のみ None
+
+    処理:
+        - session_id が指定されている場合:
+            持ち主を確認し、存在しなければ404、自分のものでなければ403にする
+        - 指定が無い場合:
+            新しいセッションを自動で作る（既存の動作を維持）
+            作成に失敗しても回答は返したいので、例外は握って None を返す
+
+    権限について（重要）:
+        session_id は連番なので、他人のIDを推測して指定するのは簡単。
+        検証せずに追記すると、他人の会話に自分の発言を勝手に挿入できてしまう。
+        （社長のチャット履歴に、社員が偽の発言を紛れ込ませる等）
+        そのため「そのセッションの持ち主 == 自分」でなければ403で拒否する。
+        閲覧（GET）と違い書き込みなので、社長であっても他人のセッションには追記させない。
+    """
+    # 継続する会話が指定された場合。まず「本当に自分のセッションか」を確認する
+    if requested_session_id is not None:
+        owner_user_id = get_session_owner(requested_session_id)
+
+        # 存在しないセッションを指定された場合は404
+        if owner_user_id is None:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+        # 他人のセッションへの書き込みは拒否する（社長であっても他人の会話には追記させない）
+        if owner_user_id != user_id:
+            raise HTTPException(status_code=403, detail="このセッションには投稿できません")
+
+        return requested_session_id
+
+    # 指定が無ければ、新しいセッションを自動で作る（既存動作の維持）
+    # 失敗しても回答は返したいので、例外は握って None を返す（履歴が残らないだけ）
+    try:
+        return create_session(user_id=user_id)
+    except Exception:
+        logger.exception("チャットセッションの作成に失敗しました（回答の生成は続行します）")
+        return None
+
+
 @router.post("")
 async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
     """質問を受け取り、RAGで生成したAIの回答を返す。あわせて会話をDBに記録する。
@@ -77,12 +126,8 @@ async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
         ただし role を answer_question → search まで渡すことで、検索範囲を権限で絞る。
         社員は共通ソースのみ、社長は全ソースが対象になる。
 
-    session_id を受け取るときの権限チェック（重要）:
-        session_id は連番なので、他人のIDを推測して指定するのは簡単。
-        検証せずに追記すると、他人の会話に自分の発言を勝手に挿入できてしまう。
-        （社長のチャット履歴に、社員が偽の発言を紛れ込ませる等）
-        そのため「そのセッションの持ち主 == 自分」でなければ 403 で拒否する。
-        閲覧（GET）と違い書き込みなので、社長であっても他人のセッションには追記させない。
+    session_id を受け取るときの権限チェック:
+        他人のセッションに書き込めないよう、_resolve_session が持ち主を検証する（詳細はそちら）。
 
     履歴保存の失敗について:
         履歴の記録はあくまで管理用の副次的な処理なので、ここで失敗しても回答は返す。
@@ -100,28 +145,8 @@ async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
     user_id = token["user_id"]
     role = token["role"]
 
-    # 3. どのセッションに記録するかを決める
-    if req.session_id is not None:
-        # 3-a. 継続する会話が指定された場合。まず「本当に自分のセッションか」を確認する
-        owner_user_id = get_session_owner(req.session_id)
-
-        # 存在しないセッションを指定された場合は404
-        if owner_user_id is None:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません")
-
-        # 他人のセッションへの書き込みは拒否する（社長であっても他人の会話には追記させない）
-        if owner_user_id != user_id:
-            raise HTTPException(status_code=403, detail="このセッションには投稿できません")
-
-        session_id = req.session_id
-    else:
-        # 3-b. 指定が無ければ、従来どおり新しいセッションを自動で作る（既存動作の維持）
-        #      失敗しても回答は返したいので session_id は None のままにする
-        session_id = None
-        try:
-            session_id = create_session(user_id=user_id)
-        except Exception:
-            logger.exception("チャットセッションの作成に失敗しました（回答の生成は続行します）")
+    # 3. どのセッションに記録するかを決める（権限チェック込み）
+    session_id = _resolve_session(req.session_id, user_id)
 
     # 4. RAGの中核関数に質問と role を渡し、回答文と参照ソースIDを生成してもらう
     answer, referenced_sources = answer_question(question, role=role)
@@ -137,6 +162,110 @@ async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
     # 6. 回答と参照ソースIDをJSONで返す
     #    reply キーはフロント chat.js が読んでいるので変えない（互換性のため）
     return {"reply": answer, "referenced_sources": referenced_sources}
+
+
+def _sse_event(event: str, data: dict) -> str:
+    """SSE（Server-Sent Events）の1イベントを、送信できる文字列に組み立てる。
+
+    入力:
+        event … イベント名（'sources' / 'token' / 'done' / 'error'）
+        data  … そのイベントで送る中身（辞書）
+
+    出力:
+        SSE形式の文字列。例:
+            event: token\\ndata: {"text": "こんにちは"}\\n\\n
+
+    SSEの決まりごと:
+        - "event: 名前" と "data: 中身" を改行で並べ、最後に空行を1つ入れて1イベントの区切りとする
+        - data の中に生の改行があると、そこで別の行と解釈されて壊れる
+          → JSON文字列にすることで改行が \\n にエスケープされ、1行に収まる
+        - ensure_ascii=False で日本語をそのまま送る（読みやすさのため）
+    """
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+@router.post("/stream")
+async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
+    """質問を受け取り、AIの回答を「生成された端から少しずつ」流して返す（SSE版）。
+
+    入力:
+        req   … ChatRequest（question と、任意の session_id）
+        token … verify_token が返すログイン情報（user_id と role を含む）
+
+    出力:
+        text/event-stream 形式のストリーム。次の順でイベントが流れる:
+            1. event: sources … 参照した source_id のリスト（最初に1回）
+            2. event: token   … 回答本文の断片（生成されるたびに連続で何度も）
+            3. event: done    … 生成完了の合図（最後に1回）
+            ※ 途中でエラーが起きた場合は event: error を流して終わる
+
+    POST /api/chat との違い:
+        /api/chat は全文が完成するまで待ってからJSONを1回返す。
+        こちらは断片が届くたびに送るので、画面に文字が少しずつ出てくる表示ができる。
+        既存の /api/chat はそのまま残してあるので、フロントは好きな方を使える。
+
+    履歴保存について（B案・完走時のみ保存）:
+        本文を最後まで送り終えたときだけ、質問と回答をDBに記録する。
+        途中でユーザーがブラウザを閉じたり、生成がエラーで止まった場合は保存しない。
+        中途半端な回答が「AIの回答」として履歴に残ると、後から読んだ社長が
+        誤った内容を正しい回答だと受け取ってしまうため、記録しない方を選んでいる。
+
+    権限について:
+        検索範囲の絞り込み（社員は共通ソースのみ）も、
+        session_id の持ち主チェックも、非ストリーミング版とまったく同じ。
+    """
+    # 1. 前後の空白を除いて、質問が実質空でないか確認する
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="質問を入力してください")
+
+    # 2. ログイン情報から user_id と role を取り出す
+    user_id = token["user_id"]
+    role = token["role"]
+
+    # 3. どのセッションに記録するかを決める（権限チェック込み。/api/chat と同じ処理）
+    #    ここで403や404になる場合は、ストリームを始める前に通常のHTTPエラーとして返る
+    session_id = _resolve_session(req.session_id, user_id)
+
+    # 4. 参照ソースID（確定値）と、本文の断片を順に取り出せる入れ物を受け取る
+    #    この時点ではまだ生成は始まっていない（for で回した瞬間に生成が走る）
+    referenced_sources, chunk_iterator = answer_question_stream(question, role=role)
+
+    def event_stream():
+        """SSEのイベントを順に送り出す。送り終わったら履歴を保存する。"""
+        # 送信済みの本文を貯めていく入れ物（最後に履歴として保存するため）
+        collected: list[str] = []
+
+        try:
+            # 4-a. 最初に「どの資料を参照したか」を1回送る
+            yield _sse_event("sources", {"referenced_sources": referenced_sources})
+
+            # 4-b. 本文の断片が届くたびに、1つずつ送る（ここが「少しずつ出てくる」部分）
+            for chunk in chunk_iterator:
+                collected.append(chunk)
+                yield _sse_event("token", {"text": chunk})
+
+            # 4-c. 最後まで届いたので、完了の合図を送る
+            yield _sse_event("done", {})
+
+        except Exception:
+            # 生成の途中でエラーが起きた場合。履歴は保存せず、エラーを伝えて終わる
+            # （途中までの回答を「AIの回答」として残さないため）
+            logger.exception("ストリーミング生成中にエラーが発生しました")
+            yield _sse_event("error", {"message": "回答の生成中にエラーが発生しました"})
+            return
+
+        # 5. ここに到達＝最後まで送り切った（完走した）場合のみ、履歴を保存する
+        #    途中でブラウザを閉じられた場合、この行には到達しない（＝保存されない）
+        if session_id is not None:
+            try:
+                add_message(session_id, "user", question)
+                add_message(session_id, "assistant", "".join(collected))
+            except Exception:
+                logger.exception("チャット履歴の保存に失敗しました（回答は送信済み）")
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/sessions")
