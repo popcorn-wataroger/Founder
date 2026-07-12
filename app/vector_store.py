@@ -11,6 +11,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -46,11 +47,12 @@ def ensure_collection() -> None:
     処理:
         1. 既存コレクション一覧を取得し、"sources" が既にあるか調べる
         2. 無ければ、3072次元・cosine距離のコレクションを新規作成する（あれば作らない）
-        3. scope と owner_user_id に payload インデックスを張る（既にあれば何も起きない）
+        3. scope / owner_user_id / source_id に payload インデックスを張る（既にあれば何も起きない）
 
     なぜ payload インデックスが要るか:
         Qdrant は、インデックスの無いキーでの絞り込み検索を拒否する（400エラーになる）。
         search で scope による権限フィルタを掛けるので、scope にインデックスが必須。
+        delete_by_source_id で source_id を指定して消すので、source_id にも必須。
         owner_user_id も、将来「特定社員の個別ソースだけ検索する」際に同じ理由で必要になる。
 
     なぜ冪等にするか:
@@ -69,9 +71,9 @@ def ensure_collection() -> None:
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=DISTANCE),
         )
 
-    # 絞り込み検索に使うキーへインデックスを張る
+    # 絞り込み（検索・削除）に使うキーへインデックスを張る
     # KEYWORD = 完全一致で絞り込む文字列型（"common" などのラベル向き）
-    for field_name in ("scope", "owner_user_id"):
+    for field_name in ("scope", "owner_user_id", "source_id"):
         _client.create_payload_index(
             collection_name=COLLECTION_NAME,
             field_name=field_name,
@@ -219,3 +221,39 @@ def search(question: str, role: str, top_k: int = 3) -> list[dict]:
         }
         for point in response.points
     ]
+
+
+def delete_by_source_id(source_id: str) -> None:
+    """指定したソースのチャンクを、sources コレクションからまとめて削除する。
+
+    入力:
+        source_id … 削除したいソースのID（DBの sources.source_id を文字列にしたもの）
+
+    出力:
+        なし（Qdrant側から該当ポイントが消えた状態になる）
+
+    処理:
+        payload の source_id が一致するポイントを、条件（フィルタ）で指定して削除する。
+        1つのソースは複数チャンクに分かれて保存されているので、
+        ポイントIDを1つずつ指定するのではなく、source_id でまとめて消す。
+
+    なぜ必要か:
+        ソースを削除してもベクトルがQdrantに残っていると、
+        「消したはずの資料」を根拠にAIが回答し続けてしまう。
+        特に個別ソース（評価・給与など）が消し残ると情報漏洩につながる。
+        DBの削除とQdrantの削除は必ず連動させる。
+    """
+    # source_id が一致するポイントだけを対象にする条件を組み立てる
+    _client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=FilterSelector(
+            filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="source_id", match=MatchValue(value=source_id)
+                    )
+                ]
+            )
+        ),
+        wait=True,  # 削除の完了を待ってから戻る（消える前に次の処理へ進まないため）
+    )
