@@ -104,8 +104,6 @@ def test_名前解決に失敗したURLは拒否される(monkeypatch: pytest.Mo
 
 
 @pytest.mark.parametrize("scheme", ["http", "https"])
-def test_公開IPに解決されるURLは許可される(
-    monkeypatch: pytest.MonkeyPatch, scheme: str
-) -> None:
+def test_公開IPに解決されるURLは許可される(monkeypatch: pytest.MonkeyPatch, scheme: str) -> None:
     _patch_getaddrinfo(monkeypatch, "93.184.216.34")
     assert vectorizer._is_safe_public_url(f"{scheme}://example.com/page") is True

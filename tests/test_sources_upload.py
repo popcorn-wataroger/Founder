@@ -123,9 +123,7 @@ def test_危険なファイル名でもuploads配下から出ない(
     assert "evil" not in 保存パス.name
 
 
-def test_正常なファイル名は保存でき元の名前がDBに残る(
-    client: TestClient, upload_dir: Path
-) -> None:
+def test_正常なファイル名は保存でき元の名前がDBに残る(client: TestClient, upload_dir: Path) -> None:
     """正常系。ディスク上は安全な名前、DBの file_name は元の名前、という分離を固定する。"""
     response = _upload(client, "就業規則.txt")
 
