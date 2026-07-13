@@ -42,6 +42,30 @@ def validate_scope(scope: str, owner_user_id: str | None) -> None:
         raise HTTPException(status_code=400, detail="individual の場合は owner_user_id が必須です")
 
 
+def _sanitize_for_log(value: object) -> str:
+    """ログに書き出す値から改行を取り除く（ログインジェクション対策）。
+
+    入力:
+        value … ログに載せたい値（source_id など、リクエスト由来の可能性がある値）
+
+    出力:
+        改行を取り除いた文字列
+
+    なぜ必要か（ログインジェクション対策）:
+        ログは1行1レコードとして読まれる。値の中に改行が混ざっていると、
+        攻撃者が「偽のログ行」を丸ごと差し込めてしまう。たとえば
+        '1\\nINFO: 管理者がログインしました' のような値を送られると、
+        ログ上は正規の記録と見分けがつかず、調査や監査を欺かれる。
+        そこで、値をログに渡す前に改行を落として「1行に閉じ込める」。
+
+    補足:
+        現在の delete_source は source_id を int で受けており、数値以外は
+        FastAPI が422で弾くため実際には改行は入らない。それでもここを通すのは、
+        将来 str で受けるよう変わったときに黙って穴が開くのを防ぐため。
+    """
+    return str(value).replace("\r", "").replace("\n", "")
+
+
 def _rollback_source(source_id: int, save_path: Path | None) -> None:
     """ベクトル化に失敗したとき、DB登録とファイル保存を取り消す。
 
@@ -341,7 +365,10 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
     try:
         delete_by_source_id(str(source_id))
     except Exception:
-        logger.exception("Qdrantからの削除に失敗しました source_id=%s", source_id)
+        # リクエスト由来の値は、改行を落としてからログに渡す（ログインジェクション対策）
+        logger.exception(
+            "Qdrantからの削除に失敗しました source_id=%s", _sanitize_for_log(source_id)
+        )
         raise HTTPException(
             status_code=500,
             detail="ベクトルの削除に失敗しました。ソースは削除されていません",
