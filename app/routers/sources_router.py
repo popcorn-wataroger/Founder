@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -162,10 +163,29 @@ async def upload_source(
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 同名ファイルの衝突を避けるためタイムスタンプをプレフィックスに付ける
+    # ディスク上の保存名は、ユーザーのファイル名を一切使わずサーバー側で組み立てる
+    # なぜ必要か（パストラバーサル対策）:
+    #     file.filename はクライアントが自由に決められる文字列で、
+    #     '../../app/main.py' や '/etc/cron.d/evil' のような値も送りつけられる。
+    #     これをそのまま連結すると uploads/ の外へ書き込めてしまう
+    #     （Path の / は「安全な結合」ではなく単なる連結で、右が絶対パスなら左を捨てる）。
+    #     そこで保存名は timestamp + uuid4 + 検証済み suffix だけで作り、
+    #     ユーザー入力が保存先パスに混ざる余地を無くす。
+    # timestamp … 人が見て「いつの投入か」を追えるように
+    # uuid4     … 同時アップロードでも名前が衝突しないように
+    # suffix    … 上の ALLOWED_EXTENSIONS チェックを通った安全な拡張子のみ
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    save_name = f"{timestamp}_{file.filename}"
+    save_name = f"{timestamp}_{uuid.uuid4()}{suffix}"
     save_path = UPLOAD_DIR / save_name
+
+    # 書き込む直前に「本当に uploads/ の中か」を最終確認する（多層防御）
+    # なぜ必要か（パストラバーサル対策）:
+    #     上の生成方法なら理屈上は外に出ないが、将来ここのコードが変わったときに
+    #     気づかず穴が開くのを防ぐ。resolve() で '..' やシンボリックリンクを解決した
+    #     実体パスに直したうえで、uploads/ の配下にあることを確かめる。
+    if not save_path.resolve().is_relative_to(UPLOAD_DIR.resolve()):
+        raise HTTPException(status_code=400, detail="不正なファイル名です")
+
     save_path.write_bytes(contents)
 
     uploaded_at = datetime.now(timezone.utc).isoformat()
@@ -179,6 +199,9 @@ async def upload_source(
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            # file_name … 画面に表示する「元のファイル名」。表示専用で、パスの組み立てには使わない
+            # file_path … 実際の保存先。上で生成した安全な名前（uploads/ の中）
+            # 「見せる名前」と「ディスク上の名前」を分けることでパストラバーサルを断つ
             file.filename,
             file_type,
             str(save_path),
