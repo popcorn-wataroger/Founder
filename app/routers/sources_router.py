@@ -19,6 +19,16 @@ UPLOAD_DIR = Path("uploads")
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
 
+# ソース種別 → 保存に使う拡張子の対応表。
+# なぜ辞書で持つか（パストラバーサル対策）:
+#     保存パスに載せる拡張子は、ユーザーのファイル名から切り出した文字列ではなく
+#     「コード側が持つ定数」から引く。こうすると保存パスを構成する文字列に
+#     ユーザー入力が1文字も混ざらない。
+#     入口の ALLOWED_EXTENSIONS チェック（値を変えない検査）だけでは、
+#     静的解析から見て「ユーザー入力がパスまで届いている」状態が続いてしまうため、
+#     値そのものを定数に置き換えて汚染を断ち切る。
+EXTENSION_BY_TYPE = {"pdf": ".pdf", "docx": ".docx", "pptx": ".pptx", "txt": ".txt"}
+
 
 @router.get("")
 async def list_sources(token: dict = Depends(require_admin)):
@@ -187,19 +197,23 @@ async def upload_source(
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+    # ソース種別（pdf / docx / pptx / txt）。上のチェックを通っているので必ず辞書に存在する
+    file_type = suffix.lstrip(".")
+
     # ディスク上の保存名は、ユーザーのファイル名を一切使わずサーバー側で組み立てる
     # なぜ必要か（パストラバーサル対策）:
     #     file.filename はクライアントが自由に決められる文字列で、
     #     '../../app/main.py' や '/etc/cron.d/evil' のような値も送りつけられる。
     #     これをそのまま連結すると uploads/ の外へ書き込めてしまう
     #     （Path の / は「安全な結合」ではなく単なる連結で、右が絶対パスなら左を捨てる）。
-    #     そこで保存名は timestamp + uuid4 + 検証済み suffix だけで作り、
-    #     ユーザー入力が保存先パスに混ざる余地を無くす。
-    # timestamp … 人が見て「いつの投入か」を追えるように
-    # uuid4     … 同時アップロードでも名前が衝突しないように
-    # suffix    … 上の ALLOWED_EXTENSIONS チェックを通った安全な拡張子のみ
+    # timestamp   … 人が見て「いつの投入か」を追えるように
+    # uuid4       … 同時アップロードでも名前が衝突しないように
+    # safe_suffix … ユーザーのファイル名から切り出した文字列ではなく、
+    #               EXTENSION_BY_TYPE が持つ定数を使う。これで保存パスを組み立てる
+    #               材料が全てコード側の値になり、ユーザー入力が1文字も混ざらない
+    safe_suffix = EXTENSION_BY_TYPE[file_type]
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    save_name = f"{timestamp}_{uuid.uuid4()}{suffix}"
+    save_name = f"{timestamp}_{uuid.uuid4()}{safe_suffix}"
     save_path = UPLOAD_DIR / save_name
 
     # 書き込む直前に「本当に uploads/ の中か」を最終確認する（多層防御）
@@ -213,7 +227,6 @@ async def upload_source(
     save_path.write_bytes(contents)
 
     uploaded_at = datetime.now(timezone.utc).isoformat()
-    file_type = suffix.lstrip(".")
 
     conn = get_connection()
     cursor = conn.execute(
