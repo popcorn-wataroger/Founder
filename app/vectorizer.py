@@ -4,6 +4,10 @@
 embedding（ベクトル化）や Qdrant への保存は後続ステップで追加する。
 """
 
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
 import requests
 from bs4 import BeautifulSoup
 from docx import Document
@@ -89,10 +93,99 @@ def _extract_txt(path: str) -> str:
         return f.read()
 
 
+def _is_safe_public_url(url: str) -> bool:
+    """URLが「外部の公開サーバー」を指しているかを判定する。
+
+    入力:
+        url … 検査したいURL文字列
+
+    出力:
+        True  … http/https で、名前解決したIPがすべて公開IPだった場合
+        False … それ以外（スキーム違反・名前解決失敗・内部IPを含む）
+
+    なぜ必要か（SSRF対策）:
+        URLは社長がフォームから自由に入力できる。もし何の検査もせずに
+        requests.get すると、サーバー自身に「内部だけに見えるアドレス」へ
+        アクセスさせられてしまう。これをSSRF（サーバー側リクエスト偽造）と呼ぶ。
+        たとえば http://169.254.169.254/ はクラウド(GCP等)のメタデータサーバーで、
+        サービスアカウントのアクセストークンが取れてしまう。
+        http://localhost:8000/ や社内ネットワークのIPも同様に危険。
+        そこで「公開インターネット上のIPだけ許可する」という関門をここに置く。
+    """
+    parsed = urlparse(url)
+
+    # http / https 以外（file:// や gopher:// など）は最初から拒否する
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    try:
+        # ホスト名をIPアドレスに解決する。1つのホスト名が複数IPを持つことがあるので
+        # 「全部」取り出し、1つでも危険なIPがあれば拒否する
+        addr_infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        # 名前解決できないURLは安全か判断できない → 安全側に倒して拒否する
+        return False
+
+    for info in addr_infos:
+        # sockaddr の先頭要素がIPアドレス文字列（例: '93.184.216.34'）
+        # 型チェッカーからは str か int か判別できないため str() で明示的に文字列化する
+        ip_str = str(info[4][0])
+        # IPv6のリンクローカルは 'fe80::1%en0' のようにゾーンIDが付くので切り落とす
+        ip_str = ip_str.split("%")[0]
+
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            # IPとして解釈できない＝想定外。安全側に倒して拒否する
+            return False
+
+        # 内部向けのアドレスをまとめて弾く
+        # is_private     … 社内LAN等（10.x / 172.16-31.x / 192.168.x）
+        # is_loopback    … 自分自身（127.0.0.1）
+        # is_link_local  … 169.254.x（クラウドのメタデータサーバーを含む）
+        # is_reserved    … 予約済みアドレス
+        # is_multicast   … マルチキャスト
+        # is_unspecified … 0.0.0.0
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+
+    # すべて公開IPだった場合のみ通す
+    return True
+
+
 def _extract_url(url: str) -> str:
-    """URLのウェブページから本文を抽出する。"""
-    # ページのHTMLを取得する（タイムアウトを設定して固まりを防ぐ）
-    response = requests.get(url, timeout=URL_TIMEOUT)
+    """URLのウェブページから本文を抽出する。
+
+    入力:
+        url … 取得したいウェブページのURL
+
+    出力:
+        ページの表示テキスト（文字列）
+
+    処理:
+        取得の前に _is_safe_public_url で「公開サーバー向けのURLか」を検査し、
+        危険なURLなら通信せずに ValueError を投げる。
+    """
+    # 通信する前に関門を通す（内部ネットワークへのアクセスを防ぐ＝SSRF対策）
+    if not _is_safe_public_url(url):
+        raise ValueError(f"このURLは取得できません: {url}")
+
+    # ページのHTMLを取得する
+    # timeout … 応答が無いURLで固まらないための保険
+    # allow_redirects=False … 公開URLに見せかけて内部アドレスへ302転送する
+    #                         抜け道を塞ぐため、リダイレクトは追わない
+    response = requests.get(url, timeout=URL_TIMEOUT, allow_redirects=False)
     response.raise_for_status()
 
     # HTMLを解析し、本文に不要なタグ（script/style）を取り除く
