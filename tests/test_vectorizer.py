@@ -1,4 +1,4 @@
-"""_is_safe_public_url（SSRF対策の関門）のテスト。
+"""_ensure_safe_url（SSRF対策の関門）のテスト。
 
 なぜモックするか:
     この関数は socket.getaddrinfo で「ホスト名 → IPアドレス」を解決する。
@@ -52,7 +52,8 @@ def _patch_getaddrinfo(monkeypatch: pytest.MonkeyPatch, *ips: str) -> None:
     ],
 )
 def test_非http_httpsスキームは拒否される(url: str) -> None:
-    assert vectorizer._is_safe_public_url(url) is False
+    with pytest.raises(ValueError):
+        vectorizer._ensure_safe_url(url)
 
 
 # --- 内部向けIPに解決されるホスト名は拒否される ---
@@ -74,7 +75,8 @@ def test_内部向けIPに解決されるURLは拒否される(
     monkeypatch: pytest.MonkeyPatch, ip: str, 理由: str
 ) -> None:
     _patch_getaddrinfo(monkeypatch, ip)
-    assert vectorizer._is_safe_public_url("http://evil.example/") is False, 理由
+    with pytest.raises(ValueError):
+        vectorizer._ensure_safe_url("http://evil.example/")
 
 
 def test_公開IPと内部IPが混ざる場合も拒否される(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,7 +86,8 @@ def test_公開IPと内部IPが混ざる場合も拒否される(monkeypatch: py
     全IPを検査して1つでも危険なら拒否する必要がある。
     """
     _patch_getaddrinfo(monkeypatch, "93.184.216.34", "127.0.0.1")
-    assert vectorizer._is_safe_public_url("http://evil.example/") is False
+    with pytest.raises(ValueError):
+        vectorizer._ensure_safe_url("http://evil.example/")
 
 
 # --- 名前解決に失敗した場合 ---
@@ -97,13 +100,17 @@ def test_名前解決に失敗したURLは拒否される(monkeypatch: pytest.Mo
         raise socket.gaierror("名前解決に失敗しました")
 
     monkeypatch.setattr(vectorizer.socket, "getaddrinfo", raise_gaierror)
-    assert vectorizer._is_safe_public_url("http://not-exist.example/") is False
+    with pytest.raises(ValueError):
+        vectorizer._ensure_safe_url("http://not-exist.example/")
 
 
-# --- 公開IPに解決されるURLだけが通る ---
+# --- 公開IPに解決されるURLだけが通り、検査を通った url がそのまま返る ---
 
 
 @pytest.mark.parametrize("scheme", ["http", "https"])
 def test_公開IPに解決されるURLは許可される(monkeypatch: pytest.MonkeyPatch, scheme: str) -> None:
     _patch_getaddrinfo(monkeypatch, "93.184.216.34")
-    assert vectorizer._is_safe_public_url(f"{scheme}://example.com/page") is True
+    url = f"{scheme}://example.com/page"
+    # 安全と確認できたときは、渡した url がそのまま返る
+    # （この戻り値を requests.get の sink に渡すのが SSRF 対策の要）
+    assert vectorizer._ensure_safe_url(url) == url
