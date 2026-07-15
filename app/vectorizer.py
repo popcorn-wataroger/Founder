@@ -93,51 +93,30 @@ def _extract_txt(path: str) -> str:
         return f.read()
 
 
-def _ensure_safe_url(url: str) -> str:
-    """URLが「外部の公開サーバー」を指しているかを検査し、安全なURLだけを返す。
+def _resolved_ips_are_public(hostname: str) -> bool:
+    """ホスト名を名前解決し、解決先IPがすべて公開IPかどうかを返す。
 
     入力:
-        url … 検査したいURL文字列
+        hostname … 検査したいホスト名
 
     出力:
-        安全だと確認できた url をそのまま返す
-        （http/https で、名前解決したIPがすべて公開IPだった場合のみ）
+        True  … 名前解決でき、解決先IPがすべて公開IPだった場合
+        False … 名前解決に失敗、またはIPを1つでも内部向けが含まれる場合
 
-    例外:
-        ValueError … スキーム違反・名前解決失敗・内部IPを含むなど、
-                     安全と確認できなかった場合
-
-    なぜ「値を返す」形なのか（SSRF対策）:
-        URLは社長がフォームから自由に入力できる。もし何の検査もせずに
-        requests.get すると、サーバー自身に「内部だけに見えるアドレス」へ
-        アクセスさせられてしまう。これをSSRF（サーバー側リクエスト偽造）と呼ぶ。
-        たとえば http://169.254.169.254/ はクラウド(GCP等)のメタデータサーバーで、
-        サービスアカウントのアクセストークンが取れてしまう。
-        http://localhost:8000/ や社内ネットワークのIPも同様に危険。
-        そこで「公開インターネット上のIPだけ許可する」という関門をここに置く。
-
-        bool を返すだけの判定関数だと「検査した値」と「実際に requests.get へ
-        渡す値」が別物になり、静的解析(CodeQL)からはガードが素通しに見える。
-        検査を通った url 自身を返し、その戻り値を sink に渡すことで、
-        「検証 → 使用」が一本のデータフロー上に乗り、関門として機能する。
+    補足:
+        「URL全体の安全判定」はあえてここに置かない。SSRFの sink（requests.get）
+        の直前で url を条件に弾く必要があるため、URLに対する検査と通信は
+        呼び出し側（_extract_url）の同一スコープにまとめてある。
+        この関数は「名前解決したIP群が公開か」という副次的な判定だけを担い、
+        DNS を差し替えてテストしやすくするために切り出している。
     """
-    parsed = urlparse(url)
-
-    # http / https 以外（file:// や gopher:// など）は最初から拒否する
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"このURLは取得できません: {url}")
-
-    hostname = parsed.hostname
-    if not hostname:
-        raise ValueError(f"このURLは取得できません: {url}")
-
     try:
         # ホスト名をIPアドレスに解決する。1つのホスト名が複数IPを持つことがあるので
         # 「全部」取り出し、1つでも危険なIPがあれば拒否する
         addr_infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror as exc:
+    except socket.gaierror:
         # 名前解決できないURLは安全か判断できない → 安全側に倒して拒否する
-        raise ValueError(f"このURLは取得できません: {url}") from exc
+        return False
 
     for info in addr_infos:
         # sockaddr の先頭要素がIPアドレス文字列（例: '93.184.216.34'）
@@ -148,9 +127,9 @@ def _ensure_safe_url(url: str) -> str:
 
         try:
             ip = ipaddress.ip_address(ip_str)
-        except ValueError as exc:
+        except ValueError:
             # IPとして解釈できない＝想定外。安全側に倒して拒否する
-            raise ValueError(f"このURLは取得できません: {url}") from exc
+            return False
 
         # 内部向けのアドレスをまとめて弾く
         # is_private     … 社内LAN等（10.x / 172.16-31.x / 192.168.x）
@@ -167,10 +146,10 @@ def _ensure_safe_url(url: str) -> str:
             or ip.is_multicast
             or ip.is_unspecified
         ):
-            raise ValueError(f"このURLは取得できません: {url}")
+            return False
 
-    # すべて公開IPだった＝安全と確認できたので、その url を返す
-    return url
+    # すべて公開IPだった
+    return True
 
 
 def _extract_url(url: str) -> str:
@@ -182,21 +161,40 @@ def _extract_url(url: str) -> str:
     出力:
         ページの表示テキスト（文字列）
 
-    処理:
-        取得の前に _ensure_safe_url で「公開サーバー向けのURLか」を検査し、
-        検査を通った url だけを requests.get に渡す。
-        危険なURLなら通信せずに ValueError を投げる。
-    """
-    # 通信する前に関門を通す（内部ネットワークへのアクセスを防ぐ＝SSRF対策）
-    # 検査を通った url 自身を safe_url として受け取り、以降はこれだけを使う。
-    # こうすることで「検証した値」と「requests.get へ渡す値」が同一になる。
-    safe_url = _ensure_safe_url(url)
+    処理（SSRF対策）:
+        URLは社長がフォームから自由に入力できる。もし何の検査もせずに
+        requests.get すると、サーバー自身に「内部だけに見えるアドレス」へ
+        アクセスさせられてしまう（SSRF＝サーバー側リクエスト偽造）。
+        たとえば http://169.254.169.254/ はクラウド(GCP等)のメタデータサーバーで、
+        サービスアカウントのアクセストークンが取れてしまう。
+        http://localhost:8000/ や社内ネットワークのIPも同様に危険。
 
-    # ページのHTMLを取得する
+        そこで「スキーム検査 → ホスト名の公開IP検査 → 取得」までを、あえて
+        この1つの関数スコープにまとめている。汚染源である url を条件にした
+        ガード（危険なら raise で打ち切る）を通り抜けた場合だけ、その直後で
+        requests.get(url) を呼ぶ。検証と sink を同一関数に閉じ込めることで、
+        静的解析(CodeQL)がこの検査を「汚染を断つ関門(barrier)」として認識でき、
+        関数境界をまたぐことによる追跡漏れを避ける狙いがある。
+    """
+    parsed = urlparse(url)
+
+    # http / https 以外（file:// や gopher:// など）は最初から拒否する
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"このURLは取得できません: {url}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"このURLは取得できません: {url}")
+
+    # ホスト名の解決先が1つでも内部向けIPなら、通信せずに打ち切る
+    if not _resolved_ips_are_public(hostname):
+        raise ValueError(f"このURLは取得できません: {url}")
+
+    # ここまでのガードを通り抜けた url だけが sink に到達する。
     # timeout … 応答が無いURLで固まらないための保険
     # allow_redirects=False … 公開URLに見せかけて内部アドレスへ302転送する
     #                         抜け道を塞ぐため、リダイレクトは追わない
-    response = requests.get(safe_url, timeout=URL_TIMEOUT, allow_redirects=False)
+    response = requests.get(url, timeout=URL_TIMEOUT, allow_redirects=False)
     response.raise_for_status()
 
     # HTMLを解析し、本文に不要なタグ（script/style）を取り除く
