@@ -6,7 +6,7 @@ embedding（ベクトル化）や Qdrant への保存は後続ステップで追
 
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -152,6 +152,56 @@ def _resolved_ips_are_public(hostname: str) -> bool:
     return True
 
 
+def _build_safe_public_url(raw_url: str) -> str:
+    """入力URLを検証し、検証を通った要素だけから安全なURLを組み立て直して返す。
+
+    入力:
+        raw_url … 社長がフォームに入力した生のURL（信用できない値）
+
+    出力:
+        検証済みの要素だけで作り直したURL文字列
+
+    例外:
+        ValueError … スキーム/ホスト/ポート/認証情報のいずれかが不正な場合
+
+    補足:
+        生の raw_url をそのまま通信に渡さないのが要点。urlsplit で分解し、
+        個々の要素を検査したうえで urlunsplit で新しい文字列を作る。
+        これにより「汚染された入力そのもの」が sink（requests.get）へ届かず、
+        静的解析(CodeQL)にも検証を通過した値であることが伝わる。
+    """
+    parsed = urlsplit(raw_url)
+
+    # http / https 以外（file:// や gopher:// など）は最初から拒否する
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("unsupported scheme")
+
+    host = parsed.hostname
+    if not host:
+        raise ValueError("missing host")
+
+    # ホスト名の解決先が1つでも内部向けIPなら、通信せずに打ち切る
+    if not _resolved_ips_are_public(host):
+        raise ValueError("non-public host")
+
+    # 不正なポート表記（例: http://example.com:abc/）は .port の参照時に例外になる
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid port") from exc
+
+    # user:pass@host 形式は、意図しない認証情報の送信につながるため拒否する
+    if parsed.username or parsed.password:
+        raise ValueError("credentials are not allowed")
+
+    netloc = host if port is None else f"{host}:{port}"
+    path = parsed.path or "/"
+
+    # 検証を通った要素だけで新しいURLを組み立てる
+    safe_url = urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, parsed.fragment))
+    return safe_url
+
+
 def _extract_url(url: str) -> str:
     """URLのウェブページから本文を抽出する。
 
@@ -169,32 +219,16 @@ def _extract_url(url: str) -> str:
         サービスアカウントのアクセストークンが取れてしまう。
         http://localhost:8000/ や社内ネットワークのIPも同様に危険。
 
-        そこで「スキーム検査 → ホスト名の公開IP検査 → 取得」までを、あえて
-        この1つの関数スコープにまとめている。汚染源である url を条件にした
-        ガード（危険なら raise で打ち切る）を通り抜けた場合だけ、その直後で
-        requests.get(url) を呼ぶ。検証と sink を同一関数に閉じ込めることで、
-        静的解析(CodeQL)がこの検査を「汚染を断つ関門(barrier)」として認識でき、
-        関数境界をまたぐことによる追跡漏れを避ける狙いがある。
+        そこで _build_safe_public_url で検査済みの要素だけからURLを組み立て直し、
+        入力された url そのものではなく、その safe_url だけを requests.get に渡す。
     """
-    parsed = urlparse(url)
+    safe_url = _build_safe_public_url(url)
 
-    # http / https 以外（file:// や gopher:// など）は最初から拒否する
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"このURLは取得できません: {url}")
-
-    hostname = parsed.hostname
-    if not hostname:
-        raise ValueError(f"このURLは取得できません: {url}")
-
-    # ホスト名の解決先が1つでも内部向けIPなら、通信せずに打ち切る
-    if not _resolved_ips_are_public(hostname):
-        raise ValueError(f"このURLは取得できません: {url}")
-
-    # ここまでのガードを通り抜けた url だけが sink に到達する。
+    # sink に到達するのは、検証済み要素から作り直した safe_url だけ。
     # timeout … 応答が無いURLで固まらないための保険
     # allow_redirects=False … 公開URLに見せかけて内部アドレスへ302転送する
     #                         抜け道を塞ぐため、リダイレクトは追わない
-    response = requests.get(url, timeout=URL_TIMEOUT, allow_redirects=False)
+    response = requests.get(safe_url, timeout=URL_TIMEOUT, allow_redirects=False)
     response.raise_for_status()
 
     # HTMLを解析し、本文に不要なタグ（script/style）を取り除く
