@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app.config import UPLOAD_DIR
 from app.database import get_connection
 from app.routers.auth_router import require_admin
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
@@ -15,7 +16,6 @@ router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = Path("uploads")
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
 

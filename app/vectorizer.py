@@ -5,7 +5,9 @@ embedding（ベクトル化）や Qdrant への保存は後続ステップで追
 """
 
 import ipaddress
+import re
 import socket
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -15,10 +17,19 @@ from google import genai
 from pptx import Presentation
 from pypdf import PdfReader
 
-from app.config import GEMINI_API_KEY
+from app.config import GEMINI_API_KEY, UPLOAD_DIR
 
 # URL取得時のタイムアウト秒数（応答が無いURLで固まらないための保険）
 URL_TIMEOUT = 10
+
+# アップロード時にサーバー側が組み立てる保存ファイル名の形式。
+# sources_router の save_name = f"{timestamp}_{uuid4}{拡張子}" に対応する
+#   timestamp … %Y%m%d%H%M%S%f の20桁
+#   uuid4     … 8-4-4-4-12 のハイフン付き36文字
+_SAFE_FILE_NAME_PATTERN = re.compile(
+    r"[0-9]{20}_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"\.(?:pdf|docx|pptx|txt)"
+)
 
 # チャンク分割の設定（Issue #19 の完了条件）
 CHUNK_SIZE = 500  # 1チャンクの最大文字数
@@ -58,9 +69,57 @@ def extract_text(path: str, file_type: str) -> str:
     raise ValueError(f"未対応のファイル形式です: {file_type}")
 
 
+def _build_safe_upload_path(raw_path: str) -> Path:
+    """保存パス文字列を検証し、実在するファイルから安全なパスを組み立て直して返す。
+
+    入力:
+        raw_path … DBに記録された保存パス文字列（信用しない値として扱う）
+
+    出力:
+        UPLOAD_DIR 配下にある実ファイルのパス（Path）
+
+    例外:
+        ValueError … UPLOAD_DIR の外を指す / 名前の形式が想定外 / 実在しない場合
+
+    処理（パストラバーサル対策）:
+        1. resolve() で '..' やシンボリックリンクを解いた実体パスにし、
+           UPLOAD_DIR 配下にあることを確かめる（外を指すパスをここで打ち切る）
+        2. ファイル名が sources_router の生成規則どおりかを正規表現で確かめる
+        3. 実際に UPLOAD_DIR を走査し、一致した「ディレクトリ側の値」で
+           パスを組み立て直す
+
+        3が要点。open() に渡る文字列は raw_path 由来ではなく、OSが返した
+        ディレクトリ項目の名前になる。SSRF対策と同じく「検証済みの要素から
+        新しい値を作り直して sink に渡す」形にすることで、静的解析(CodeQL)から見ても
+        入力の汚染が sink まで届かなくなる。
+    """
+    base = UPLOAD_DIR.resolve()
+    candidate = Path(raw_path).resolve()
+
+    # UPLOAD_DIR の外を指すパス（'../../etc/passwd' など）は読み込まない
+    if not candidate.is_relative_to(base):
+        raise ValueError("path escapes the upload directory")
+
+    # 保存時にサーバー側が組み立てた名前の形式と一致しなければ拒否する
+    if not _SAFE_FILE_NAME_PATTERN.fullmatch(candidate.name):
+        raise ValueError("unexpected file name")
+
+    if not base.is_dir():
+        raise ValueError("upload directory does not exist")
+
+    # ディレクトリを走査し、一致した実ファイルの名前でパスを作り直す。
+    # ここで使う entry.name はOSがディレクトリから返した値で、raw_path 由来ではない
+    for entry in base.iterdir():
+        if entry.is_file() and entry.name == candidate.name:
+            return base / entry.name
+
+    raise ValueError("file not found in the upload directory")
+
+
 def _extract_pdf(path: str) -> str:
     """PDFから本文を抽出する。"""
-    reader = PdfReader(path)
+    # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
+    reader = PdfReader(_build_safe_upload_path(path))
     # ページごとにテキストを取り出し、改行で連結する
     pages = [page.extract_text() or "" for page in reader.pages]
     return "\n".join(pages)
@@ -68,7 +127,8 @@ def _extract_pdf(path: str) -> str:
 
 def _extract_docx(path: str) -> str:
     """Word(.docx)から本文を抽出する。"""
-    document = Document(path)
+    # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
+    document = Document(_build_safe_upload_path(path))
     # 段落（paragraph）ごとの文字列を改行で連結する
     paragraphs = [para.text for para in document.paragraphs]
     return "\n".join(paragraphs)
@@ -76,7 +136,8 @@ def _extract_docx(path: str) -> str:
 
 def _extract_pptx(path: str) -> str:
     """PowerPoint(.pptx)から本文を抽出する。"""
-    presentation = Presentation(path)
+    # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
+    presentation = Presentation(_build_safe_upload_path(path))
     texts: list[str] = []
     # スライド → 図形(shape) の順にたどり、テキストを持つ図形だけ集める
     for slide in presentation.slides:
@@ -88,8 +149,11 @@ def _extract_pptx(path: str) -> str:
 
 def _extract_txt(path: str) -> str:
     """テキスト(.txt)をそのまま読み込む。"""
+    # 入力パスをそのまま開かず、検証済みの要素から作り直した安全なパスだけを開く
+    safe_path = _build_safe_upload_path(path)
+
     # 文字化けを避けるため UTF-8 で読み込む
-    with open(path, encoding="utf-8") as f:
+    with open(safe_path, encoding="utf-8") as f:
         return f.read()
 
 

@@ -1,8 +1,14 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# アップロードしたファイルの保存先ディレクトリ。
+# 保存側(sources_router)と読み込み側(vectorizer)の両方が「同じ1つの正解」を
+# 参照できるよう、どちらからも依存しない config に置く。
+UPLOAD_DIR = Path("uploads")
 
 STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
