@@ -69,51 +69,56 @@ def extract_text(path: str, file_type: str) -> str:
     raise ValueError(f"未対応のファイル形式です: {file_type}")
 
 
-def _build_safe_upload_path(raw_path: str) -> Path:
-    """保存パス文字列を検証し、実在するファイルから安全なパスを組み立て直して返す。
+def _sanitize_upload_name(raw_path: str) -> str:
+    """保存パス文字列からファイル名だけを取り出し、想定どおりの形式か検証して返す。
 
     入力:
         raw_path … DBに記録された保存パス文字列（信用しない値として扱う）
 
     出力:
-        UPLOAD_DIR 配下にある実ファイルのパス（Path）
+        検証を通ったファイル名（ディレクトリ部分を含まない文字列）
 
     例外:
-        ValueError … UPLOAD_DIR の外を指す / 名前の形式が想定外 / 実在しない場合
+        ValueError … 名前が保存時の生成規則に一致しない場合
 
-    処理（パストラバーサル対策）:
-        1. resolve() で '..' やシンボリックリンクを解いた実体パスにし、
-           UPLOAD_DIR 配下にあることを確かめる（外を指すパスをここで打ち切る）
-        2. ファイル名が sources_router の生成規則どおりかを正規表現で確かめる
-        3. 実際に UPLOAD_DIR を走査し、一致した「ディレクトリ側の値」で
-           パスを組み立て直す
-
-        3が要点。open() に渡る文字列は raw_path 由来ではなく、OSが返した
-        ディレクトリ項目の名前になる。SSRF対策と同じく「検証済みの要素から
-        新しい値を作り直して sink に渡す」形にすることで、静的解析(CodeQL)から見ても
-        入力の汚染が sink まで届かなくなる。
+    補足:
+        Path(...).name は末尾の要素だけを取り出すため、この時点で
+        'uploads/' や '../' といったディレクトリ部分は全て捨てられる。
+        そのうえで正規表現に完全一致するかを確かめるので、区切り文字も '..' も
+        通り抜けられない。
     """
-    base = UPLOAD_DIR.resolve()
-    candidate = Path(raw_path).resolve()
-
-    # UPLOAD_DIR の外を指すパス（'../../etc/passwd' など）は読み込まない
-    if not candidate.is_relative_to(base):
-        raise ValueError("path escapes the upload directory")
+    name = Path(raw_path).name
 
     # 保存時にサーバー側が組み立てた名前の形式と一致しなければ拒否する
-    if not _SAFE_FILE_NAME_PATTERN.fullmatch(candidate.name):
+    if not _SAFE_FILE_NAME_PATTERN.fullmatch(name):
         raise ValueError("unexpected file name")
 
-    if not base.is_dir():
-        raise ValueError("upload directory does not exist")
+    return name
 
-    # ディレクトリを走査し、一致した実ファイルの名前でパスを作り直す。
-    # ここで使う entry.name はOSがディレクトリから返した値で、raw_path 由来ではない
-    for entry in base.iterdir():
-        if entry.is_file() and entry.name == candidate.name:
-            return base / entry.name
 
-    raise ValueError("file not found in the upload directory")
+def _build_safe_upload_path(raw_path: str) -> Path:
+    """検証済みのファイル名と定数ディレクトリだけから、安全なパスを組み立て直して返す。
+
+    入力:
+        raw_path … DBに記録された保存パス文字列（信用しない値として扱う）
+
+    出力:
+        UPLOAD_DIR 配下を指すパス（Path）
+
+    例外:
+        ValueError … 名前が保存時の生成規則に一致しない場合
+
+    処理（パストラバーサル対策）:
+        パスの材料を「コード側の定数 UPLOAD_DIR」と「正規表現を通ったファイル名」の
+        2つだけに限定する。入力パスのディレクトリ部分は一切使わないため、
+        UPLOAD_DIR の外を指すパスは原理的に組み立てられない。
+
+        resolve() や is_relative_to() による「検査だけして元の値を使う」形は取らない。
+        SSRF対策と同じく、検証を通った要素から新しい値を作り直して sink に渡すことで、
+        静的解析(CodeQL)から見ても入力の汚染が sink まで届かなくなる。
+    """
+    safe_name = _sanitize_upload_name(raw_path)
+    return UPLOAD_DIR / safe_name
 
 
 def _extract_pdf(path: str) -> str:
