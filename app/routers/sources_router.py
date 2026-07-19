@@ -263,7 +263,9 @@ async def upload_source(
         )
     except Exception:
         # 失敗したら、直前のDB登録とファイル保存を取り消して登録前の状態に戻す
-        logger.exception("ベクトル化に失敗しました。ソース登録を取り消します source_id=%s", source_id)
+        logger.exception(
+            "ベクトル化に失敗しました。ソース登録を取り消します source_id=%s", source_id
+        )
         _rollback_source(source_id, save_path)
         raise HTTPException(
             status_code=500,

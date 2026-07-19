@@ -120,9 +120,7 @@ def save_chunks(
     """
     # 件数がズレていると、どのチャンクがどのベクトルか対応が崩れるので先に弾く
     if len(chunks) != len(vectors):
-        raise ValueError(
-            f"chunks と vectors の件数が一致しません: {len(chunks)} != {len(vectors)}"
-        )
+        raise ValueError(f"chunks と vectors の件数が一致しません: {len(chunks)} != {len(vectors)}")
 
     points: list[PointStruct] = []
     ids: list[str] = []
@@ -130,9 +128,7 @@ def save_chunks(
     # チャンクを1件ずつ「保存できる形（ポイント）」に変換する
     for index, (text, vector) in enumerate(zip(chunks, vectors)):
         # source_id とチャンク番号を元に、一意で毎回同じになるIDを生成する
-        point_id = str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{index}")
-        )
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{index}"))
         ids.append(point_id)
 
         points.append(
@@ -198,9 +194,7 @@ def search(question: str, role: str, top_k: int = 3) -> list[dict]:
     else:
         # 社員は共通ソースのみ。payload の scope が "common" のものだけを検索対象にする
         # （must = すべての条件を満たすもの、の意味）
-        query_filter = Filter(
-            must=[FieldCondition(key="scope", match=MatchValue(value="common"))]
-        )
+        query_filter = Filter(must=[FieldCondition(key="scope", match=MatchValue(value="common"))])
 
     # 3. そのベクトルに近いポイントを top_k 件検索する
     #    query_filter を渡すと、条件に合うポイントの中だけで「近いもの」を探す
@@ -247,13 +241,7 @@ def delete_by_source_id(source_id: str) -> None:
     _client.delete(
         collection_name=COLLECTION_NAME,
         points_selector=FilterSelector(
-            filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="source_id", match=MatchValue(value=source_id)
-                    )
-                ]
-            )
+            filter=Filter(must=[FieldCondition(key="source_id", match=MatchValue(value=source_id))])
         ),
         wait=True,  # 削除の完了を待ってから戻る（消える前に次の処理へ進まないため）
     )

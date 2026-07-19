@@ -23,7 +23,9 @@ GENERATION_MODEL = "gemini-flash-latest"
 TOP_K = 3
 
 # 関連する社内文書が1件も見つからなかったときに返す定型メッセージ
-NO_CONTEXT_MESSAGE = "申し訳ありません。社内の資料には、その質問に関する情報が見つかりませんでした。"
+NO_CONTEXT_MESSAGE = (
+    "申し訳ありません。社内の資料には、その質問に関する情報が見つかりませんでした。"
+)
 
 # Gemini APIクライアント。APIキーは config 経由で読み込む（コードに直書きしない）
 _client = genai.Client(api_key=GEMINI_API_KEY)
@@ -109,9 +111,7 @@ def answer_question(question: str, role: str) -> tuple[str, list[str]]:
     return response.text, referenced_sources
 
 
-def answer_question_stream(
-    question: str, role: str
-) -> tuple[list[str], Iterator[str]]:
+def answer_question_stream(question: str, role: str) -> tuple[list[str], Iterator[str]]:
     """質問を受け取り、参照ソースIDと「回答を少しずつ生み出す入れ物」を返す（ストリーミング版）。
 
     入力:

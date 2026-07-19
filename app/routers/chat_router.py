@@ -269,9 +269,7 @@ async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
 
 
 @router.post("/sessions")
-async def create_chat_session(
-    req: SessionRequest, token: dict = Depends(verify_token)
-):
+async def create_chat_session(req: SessionRequest, token: dict = Depends(verify_token)):
     """新しいチャットセッションを作り、その session_id を返す。
 
     入力:
