@@ -7,12 +7,15 @@
     answer_question_stream … 生成された端から少しずつ返す（ストリーミング／SSE用）
 """
 
+import logging
 from collections.abc import Iterator
 
 from google import genai
 
 from app.config import GEMINI_API_KEY
 from app.vector_store import search
+
+logger = logging.getLogger(__name__)
 
 # 回答の文章生成に使う Gemini のモデル名。
 # "gemini-flash-latest" は常に現行の flash モデルを指すエイリアスで、
@@ -25,6 +28,15 @@ TOP_K = 3
 # 関連する社内文書が1件も見つからなかったときに返す定型メッセージ
 NO_CONTEXT_MESSAGE = (
     "申し訳ありません。社内の資料には、その質問に関する情報が見つかりませんでした。"
+)
+
+# 資料は見つかったが、Geminiが回答本文を返さなかったときの定型メッセージ。
+# NO_CONTEXT_MESSAGE とは意図的に文言を分けている。
+# 「資料が無い」と伝えてしまうと、実際には登録済みのソースを疑わせ、
+# ソース管理側の調査が空振りするため。
+GENERATION_FAILED_MESSAGE = (
+    "申し訳ありません。うまく回答を生成できませんでした。"
+    "お手数ですが、質問を少し変えてもう一度お試しください。"
 )
 
 # Gemini APIクライアント。APIキーは config 経由で読み込む（コードに直書きしない）
@@ -107,7 +119,19 @@ def answer_question(question: str, role: str) -> tuple[str, list[str]]:
         contents=prompt,
     )
 
-    # 6. 回答テキストと、その根拠になったソースIDのリストを返す
+    # 6. 回答本文が返らないことがある（安全性フィルタでブロックされた、上限で生成されなかった等）。
+    #    これは障害ではなく想定内の結果なので、例外にせず定型メッセージを返す。
+    #    ただし頻発したときに気づけるよう警告ログだけは残す（本文は出さない）
+    if response.text is None:
+        logger.warning(
+            "Gemini が回答本文を返しませんでした model=%s 参照ソース数=%d",
+            GENERATION_MODEL,
+            len(referenced_sources),
+        )
+        # 検索自体は成功しているので、参照ソースIDはそのまま返す
+        return GENERATION_FAILED_MESSAGE, referenced_sources
+
+    # 7. 回答テキストと、その根拠になったソースIDのリストを返す
     return response.text, referenced_sources
 
 

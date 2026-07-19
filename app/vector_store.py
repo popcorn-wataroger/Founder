@@ -208,13 +208,32 @@ def search(question: str, role: str, top_k: int = 3) -> list[dict]:
     )
 
     # 4. 各ヒットの payload から本文と、その根拠となったソースIDを取り出す
-    return [
-        {
-            "text": point.payload["text"],
-            "source_id": point.payload["source_id"],
-        }
-        for point in response.points
-    ]
+    #    payload が欠けたポイントは黙って読み飛ばさず、その場で止める。
+    #    payload の scope は社員向けの権限フィルタ（上の query_filter）の判定材料そのもので、
+    #    これが無いデータが混ざっている＝情報漏洩を防ぐ前提が崩れている状態だから。
+    #    スキップすると検索は成功したように見え、異常に誰も気づけない。
+    results: list[dict] = []
+    for point in response.points:
+        if point.payload is None:
+            raise RuntimeError(
+                f"検索結果に payload を持たないポイントがあります point_id={point.id}"
+            )
+
+        # 保存経路（save_chunks）は必ず両方を入れる。欠けているのは想定外のデータ
+        if "text" not in point.payload or "source_id" not in point.payload:
+            raise RuntimeError(
+                f"検索結果の payload に必要な項目がありません point_id={point.id} "
+                f"keys={sorted(point.payload)}"
+            )
+
+        results.append(
+            {
+                "text": point.payload["text"],
+                "source_id": point.payload["source_id"],
+            }
+        )
+
+    return results
 
 
 def delete_by_source_id(source_id: str) -> None:

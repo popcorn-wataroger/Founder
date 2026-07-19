@@ -252,6 +252,13 @@ async def upload_source(
     source_id = cursor.lastrowid
     conn.close()
 
+    # INSERT が成功していれば lastrowid には必ず値が入る。
+    # None なら採番できていない＝本来ありえない状態なので、ここで止める
+    if source_id is None:
+        raise RuntimeError(
+            f"sources への INSERT で source_id が採番されませんでした file_name={file.filename}"
+        )
+
     # 本文を取り出してベクトル化し、Qdrantに保存する（ここまで成功して初めて「登録完了」）
     try:
         chunk_count = _vectorize_and_save(
@@ -321,6 +328,11 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
     conn.commit()
     source_id = cursor.lastrowid
     conn.close()
+
+    # INSERT が成功していれば lastrowid には必ず値が入る。
+    # None なら採番できていない＝本来ありえない状態なので、ここで止める
+    if source_id is None:
+        raise RuntimeError(f"sources への INSERT で source_id が採番されませんでした url={req.url}")
 
     # URLのページ本文を取り出してベクトル化し、Qdrantに保存する
     # （ここまで成功して初めて「登録完了」。ファイルアップロードと同じ扱い）

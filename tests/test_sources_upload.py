@@ -11,9 +11,11 @@
     Qdrant・本番のuploads/とDB）だけを差し替える。
 """
 
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -58,7 +60,7 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def _upload(client: TestClient, file_name: str) -> object:
+def _upload(client: TestClient, file_name: str) -> httpx.Response:
     """指定したファイル名で /api/sources/upload を叩く。"""
     return client.post(
         "/api/sources/upload",
@@ -67,13 +69,15 @@ def _upload(client: TestClient, file_name: str) -> object:
     )
 
 
-def _saved_file_name(source_id: int) -> str:
-    """DBに記録された「表示用のファイル名」を取り出す。"""
+def _saved_file_name(source_id: int) -> sqlite3.Row:
+    """DBに記録された file_name（表示用の名前）と file_path（保存先）の行を取り出す。"""
     conn = database.get_connection()
     row = conn.execute(
         "SELECT file_name, file_path FROM sources WHERE source_id = ?", (source_id,)
     ).fetchone()
     conn.close()
+    # 呼び出し元は登録済みの source_id しか渡さない。無ければテストの前提が崩れている
+    assert row is not None, f"source_id={source_id} の行がDBに存在しない"
     return row
 
 

@@ -43,6 +43,13 @@ def create_session(user_id: str, context_type: str = "general") -> int:
     session_id = cursor.lastrowid
     conn.close()
 
+    # INSERT が成功していれば lastrowid には必ず値が入る。
+    # None なら採番できていない＝本来ありえない状態なので、ここで止める
+    if session_id is None:
+        raise RuntimeError(
+            f"chat_sessions への INSERT で session_id が採番されませんでした user_id={user_id}"
+        )
+
     return session_id
 
 
@@ -79,6 +86,14 @@ def add_message(session_id: int, role: str, content: str) -> int:
     conn.commit()
     message_id = cursor.lastrowid
     conn.close()
+
+    # INSERT が成功していれば lastrowid には必ず値が入る。
+    # None なら採番できていない＝本来ありえない状態なので、ここで止める
+    if message_id is None:
+        raise RuntimeError(
+            "chat_messages への INSERT で message_id が採番されませんでした "
+            f"session_id={session_id}"
+        )
 
     return message_id
 

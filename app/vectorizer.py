@@ -133,7 +133,8 @@ def _extract_pdf(path: str) -> str:
 def _extract_docx(path: str) -> str:
     """Word(.docx)から本文を抽出する。"""
     # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
-    document = Document(_build_safe_upload_path(path))
+    # python-docx の型定義は Path を受け取らないため str に変換して渡す（値は同じ）
+    document = Document(str(_build_safe_upload_path(path)))
     # 段落（paragraph）ごとの文字列を改行で連結する
     paragraphs = [para.text for para in document.paragraphs]
     return "\n".join(paragraphs)
@@ -142,7 +143,8 @@ def _extract_docx(path: str) -> str:
 def _extract_pptx(path: str) -> str:
     """PowerPoint(.pptx)から本文を抽出する。"""
     # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
-    presentation = Presentation(_build_safe_upload_path(path))
+    # python-pptx の型定義は Path を受け取らないため str に変換して渡す（値は同じ）
+    presentation = Presentation(str(_build_safe_upload_path(path)))
     texts: list[str] = []
     # スライド → 図形(shape) の順にたどり、テキストを持つ図形だけ集める
     for slide in presentation.slides:
@@ -371,5 +373,21 @@ def embed_text(text: str) -> list[float]:
         model=EMBEDDING_MODEL,
         contents=text,
     )
+    # ベクトルが得られなかった場合、代わりの値（ゼロベクトル等）で埋めてはいけない。
+    # 壊れたベクトルを保存すると、以後の検索が静かに誤った結果を返し続けるため、
+    # ここで止めて呼び出し元（登録処理）のロールバックに任せる。
+    # 例外メッセージには本文を含めない（社内文書の中身が流出しないようにするため）
+    if not result.embeddings:
+        raise RuntimeError(
+            f"Gemini がベクトルを返しませんでした model={EMBEDDING_MODEL} 文字数={len(text)}"
+        )
+
     # 戻り値は embedding のリスト。今回は1件なので先頭の数値列(values)を返す
-    return result.embeddings[0].values
+    values = result.embeddings[0].values
+    if values is None:
+        raise RuntimeError(
+            f"Gemini の応答にベクトルの数値列が含まれていません model={EMBEDDING_MODEL} "
+            f"文字数={len(text)}"
+        )
+
+    return values
