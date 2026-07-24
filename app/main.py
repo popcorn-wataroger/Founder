@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.database import init_db
-from app.routers import auth_router, chat_router, sources_router, stripe_router
+from app.routers import auth_router, chat_router, sources_router
 from app.routers.auth_router import require_admin
 from app.users import users
 
@@ -19,7 +19,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Founder", version="0.1.0", lifespan=lifespan)
 
-app.include_router(stripe_router.router)
 app.include_router(auth_router.router)
 app.include_router(sources_router.router)
 app.include_router(chat_router.router)
