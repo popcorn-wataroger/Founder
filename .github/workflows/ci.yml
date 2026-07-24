@@ -39,6 +39,9 @@ jobs:
     name: Test & Smoke Test
     runs-on: ubuntu-latest
     env:
+      # app/vectorizer.py が import 時に genai.Client を生成するため、値が空だと
+      # テスト収集前に ValueError で落ちる。CIでは実際のAPIを呼ばないのでダミーで足りる
+      GEMINI_API_KEY: dummy-key-for-ci
       OPENAI_API_KEY: sk-dummy
       STRIPE_PUBLISHABLE_KEY: pk_test_dummy
       STRIPE_SECRET_KEY: sk_test_dummy

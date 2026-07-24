@@ -42,6 +42,26 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
         raise HTTPException(status_code=401, detail="無効なトークンです")
 
 
+def require_admin(token: dict = Depends(verify_token)) -> dict:
+    """管理者（社長）以外は403を返す。
+
+    入力:
+        token … verify_token が検証したJWTの中身（user_id / role を含む）
+
+    出力:
+        管理者なら token をそのまま返す。管理者でなければ 403 を投げる。
+
+    使いどころ:
+        ソースのアップロード・削除、他人のチャットログ閲覧など、
+        社長だけに許す操作のエンドポイントに Depends(require_admin) を付ける。
+        認証（verify_token）と権限（require_admin）をこのファイルにまとめておくことで、
+        どのルーターからも同じ判定を使い回せる。
+    """
+    if token.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="管理者のみ操作できます")
+    return token
+
+
 class LoginRequest(BaseModel):
     employee_code: str
     password: str

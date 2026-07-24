@@ -83,7 +83,7 @@ git log --oneline -5
 |---|---|
 | フロントエンド | HTML / CSS / JavaScript（バニラ） |
 | バックエンド | Python / FastAPI |
-| AI | OpenAI API（GPT-4o） |
+| AI | Gemini API |
 | ベクトルDB | Qdrant |
 | ストレージ | Google Cloud Storage |
 | ホスティング | GCP（Cloud Run + Cloud SQL） |
