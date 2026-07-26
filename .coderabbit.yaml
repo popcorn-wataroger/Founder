@@ -1,0 +1,120 @@
+# CodeRabbit（AIコードレビュー）の設定
+# 設定リファレンス: https://docs.coderabbit.ai/reference/yaml-template
+#
+# 目的:
+#   PRを出した時点で、明らかなミスやプロジェクト規約からの逸脱を本人に返す。
+#   人間のレビュワーが設計や仕様の妥当性に集中できるようにする。
+#
+# 前提:
+#   書式(ruff)・型(mypy)・既知の脆弱性(CodeQL)はCIで機械的に検出済み。
+#   ここではCIで拾えない「設計・権限・可読性」に重点を置く。
+
+# レビューコメントを日本語で返す
+language: ja-JP
+
+tone_instructions: >-
+  初心者エンジニアも読む前提で、専門用語には短い補足を付けてください。
+  指摘は「何が問題か」だけでなく「なぜ問題か」と修正例まで書いてください。
+
+reviews:
+  # chill = バランス重視。指摘が少なすぎる/多すぎる場合は assertive / quiet に変更する
+  profile: chill
+
+  # レビューを「変更要求(Request changes)」にはせず、コメントに留める。
+  # AIの指摘でマージがブロックされると、初心者が手を止めてしまうため
+  request_changes_workflow: false
+
+  high_level_summary: true
+  sequence_diagrams: true
+  poem: false
+
+  auto_review:
+    enabled: true
+    # main 宛のPRだけレビューする（docs/github-workflow.md のとおりPRは必ず main 宛）
+    base_branches:
+      - main
+    # 下書き段階ではレビューしない（完成前の指摘はノイズになるため）
+    drafts: false
+    # 追加pushのたびに差分だけ再レビューする
+    auto_incremental_review: true
+
+  path_instructions:
+    # ---- プロジェクト全体で最優先の観点 ----
+    - path: "app/**/*.py"
+      instructions: >-
+        CLAUDE.md の権限ルールに違反していないか最優先で確認してください。
+        特に「社員(employee)は共通ソース(scope=common)しか参照できない」「他人の個別ソース
+        (owner_user_id が本人以外)は絶対に参照させない」「ソースのアップロード・削除は
+        管理者(admin)のみ」「チャットログは社員なら自分の分だけ」の4点です。
+        role や user_id による絞り込みが抜けている箇所、絞り込みをDBクエリではなく
+        取得後のPython側で行っていて漏れる可能性がある箇所を指摘してください。
+
+        コードスタイル: PEP 8準拠、型ヒント必須、I/Oを伴う処理は async/await、命名は snake_case。
+        コメントとdocstringは日本語で構いません。
+        関数には「入力・処理・出力」がわかるdocstringが付いているかも確認してください。
+
+    - path: "app/routers/**/*.py"
+      instructions: >-
+        APIエンドポイントとして、認証・認可のチェックが漏れていないか確認してください。
+        ログイン必須のエンドポイントでトークン検証が抜けていないか、管理者専用の操作で
+        role のチェックが抜けていないかを重点的に見てください。
+        エラー時に内部情報（スタックトレース、SQL、ファイルパス、APIキー）が
+        レスポンスに漏れていないかも確認してください。
+
+    - path: "app/vector_store.py"
+      instructions: >-
+        権限に応じた絞り込み（role / scope / owner_user_id）が、検索結果を受け取ってから
+        Python側で除外するのではなく、Qdrantに渡すフィルタ条件として指定されているかを
+        確認してください。後から除外する実装は、件数上限(top_k)で先に切られる影響で
+        本来見えるべき情報が消えたり、逆に漏れたりします。
+
+    - path: "app/rag.py"
+      instructions: >-
+        検索(search)に role が渡され、権限の絞り込みが検索段階で効いているかを確認してください。
+        プロンプトには「渡した社内文書の範囲で答える」という制約が残っているか、
+        Geminiが本文を返さなかった場合の分岐があるかも確認してください。
+
+    - path: "app/vectorizer.py"
+      instructions: >-
+        ファイルパスやURLを外部入力から受け取る処理では、パストラバーサル（../ による
+        意図しないファイル読み取り）と SSRF（内部ネットワークへのリクエスト）の対策が
+        維持されているかを確認してください。既存の検証処理を迂回する経路が
+        追加されていないかという観点で見てください。
+
+    - path: "static/js/**/*.js"
+      instructions: >-
+        バニラJS（フレームワーク不使用）、ES6+、セミコロンあり、文字列はダブルクォート、
+        命名は camelCase。この規約から外れていたら指摘してください。
+        APIのレスポンスをそのままinnerHTMLに入れていないか（XSSの危険）、
+        通信失敗時のエラー表示があるかを確認してください。
+
+    - path: "static/css/**/*.css"
+      instructions: >-
+        色やサイズはCSSカスタムプロパティ（CSS変数）で管理する方針です。
+        値の直書きが増えていたら指摘してください。命名は kebab-case、BEMは使いません。
+
+    - path: ".github/workflows/**"
+      instructions: >-
+        シークレットがログに出力されていないか、サードパーティのActionが
+        バージョン固定されているかを確認してください。
+
+    - path: "docs/**/*.md"
+      instructions: >-
+        初心者エンジニアが読む前提のドキュメントです。前提知識を飛ばしていないか、
+        手順どおりに実行できるかという観点で確認してください。
+
+  path_filters:
+    # 依存関係のロックファイルは自動生成のためレビュー対象外
+    - "!uv.lock"
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    # プロジェクト規約をレビュー観点として読み込ませる
+    filePatterns:
+      - "CLAUDE.md"
+      - ".claude/CLAUDE.md"
+      - "docs/github-workflow.md"
