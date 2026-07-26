@@ -1,0 +1,38 @@
+name: Qdrant Healthcheck
+
+on:
+  schedule:
+    # 毎週月曜 00:00 UTC（日本時間 月曜 9:00）
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Qdrant collection
+        env:
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          COLLECTION: sources
+        run: |
+          status=$(curl -sS -o body.json -w '%{http_code}' \
+            -H "api-key: ${QDRANT_API_KEY}" \
+            "${QDRANT_URL%/}/collections/${COLLECTION}")
+
+          echo "HTTP status: ${status}"
+
+          if [ "${status}" != "200" ]; then
+            echo "::error::Qdrant に接続できませんでした（HTTP ${status}）。クラスターが休止している可能性があります。"
+            exit 1
+          fi
+
+          points=$(jq -r '.result.points_count' body.json)
+          echo "points_count: ${points}"
+
+          if [ -z "${points}" ] || [ "${points}" = "null" ] || [ "${points}" -le 0 ]; then
+            echo "::error::コレクション ${COLLECTION} が空です（points_count=${points}）。データが失われている可能性があります。"
+            exit 1
+          fi
+
+          echo "Qdrant は正常です（points_count=${points}）"
