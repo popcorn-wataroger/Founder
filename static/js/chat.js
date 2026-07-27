@@ -20,6 +20,139 @@ let isSending = false;
 let currentSessionId = null;
 
 /**
+ * 1行分のテキストを、**太字** だけ解釈しながら親要素に流し込む。
+ *
+ * 入力:
+ *   parent … 追加先の要素（p / li / 見出しなど）
+ *   text   … 1行分の文字列（Markdownのインライン記法を含みうる）
+ * 出力:
+ *   なし（parent に文字ノードと strong 要素を足す）
+ *
+ * 処理:
+ *   text を "**" で分割し、「開き」と「閉じ」が揃っている区間だけを strong にする。
+ *   分割後の配列で、奇数番目が **〜** の中身にあたる。
+ *   ただし最後の要素が奇数番目のときは閉じる "**" が無かったということなので、
+ *   太字にせず "**" を付け直して文字のまま出す。
+ *   （ストリーミングが途中で切れたときに、記号だけ消えて見えるのを防ぐため）
+ *
+ * 文字は必ず createTextNode 経由で入れる。
+ * 正規表現でHTML文字列を組み立てて innerHTML に代入する方法は使わない
+ * （入力文がHTMLとして解釈される穴を作らないため。Issue #32 の対応と同じ方針）。
+ */
+function appendInlineMarkdown(parent, text) {
+  const parts = text.split("**");
+
+  for (let i = 0; i < parts.length; i++) {
+    const isBoldSection = i % 2 === 1;
+    const hasClosingMarker = i < parts.length - 1;
+
+    if (isBoldSection && hasClosingMarker) {
+      const strong = document.createElement("strong");
+      strong.appendChild(document.createTextNode(parts[i]));
+      parent.appendChild(strong);
+    } else if (isBoldSection) {
+      // 閉じていない "**"。記号ごと文字として残す
+      parent.appendChild(document.createTextNode(`**${parts[i]}`));
+    } else if (parts[i] !== "") {
+      parent.appendChild(document.createTextNode(parts[i]));
+    }
+  }
+}
+
+/**
+ * Markdown記法の文字列をDOMに組み立てて、要素の中身として描画する。
+ *
+ * 入力:
+ *   element … 描画先の要素（AIの吹き出し）
+ *   text    … AIの回答テキスト（Markdown記法を含みうる）
+ * 出力:
+ *   なし（element の中身を作り直す）
+ *
+ * 対応する記法（これ以外は素のテキストとして扱う）:
+ *   ブロック（行単位で判定）
+ *     "# " / "## " / "### " … 見出し
+ *     "- " / "* " が続く塊    … 箇条書き（ul + li）
+ *     "1. " のように数字+ドット+スペースが続く塊 … 番号付きリスト（ol + li）
+ *     空行                    … 段落の区切り
+ *     それ以外の連続行        … 1つの p にまとめ、行の間に br を挟む
+ *   インライン
+ *     **文字** … 太字（appendInlineMarkdown が担当）
+ *
+ * 見出しに h1〜h3 ではなく div を使う理由:
+ *   吹き出しの中の見出しは「ページの文書構造としての見出し」ではなく見た目だけの用途。
+ *   h タグを使うとページの見出し階層に紛れ込み、スクリーンリーダーの
+ *   見出しジャンプなどが会話の断片だらけになってしまうため、class で見た目だけ付ける。
+ *
+ * innerHTML を使わない理由:
+ *   AIの回答であっても、元になった社内文書の中身がそのまま含まれうる。
+ *   HTMLとして解釈させない限り、何が書かれていても文字として表示されるだけで済む。
+ */
+function renderMarkdownInto(element, text) {
+  // 中身を作り直すので、まず空にする（textContent = "" は子要素をすべて外す）
+  element.textContent = "";
+
+  const lines = String(text).split("\n");
+
+  // その行が新しいブロックの始まりかどうかを判定する小さな道具
+  const headingOf = (line) => /^(#{1,3}) (.*)$/.exec(line);
+  const bulletOf = (line) => /^[-*] (.*)$/.exec(line);
+  const numberedOf = (line) => /^\d+\. (.*)$/.exec(line);
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // 空行は段落の区切り。ここでは何も作らずに読み飛ばす
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    const heading = headingOf(line);
+    if (heading) {
+      const level = heading[1].length; // "#" の個数がそのまま見出しレベル
+      const div = document.createElement("div");
+      div.className = `md-heading md-h${level}`;
+      appendInlineMarkdown(div, heading[2]);
+      element.appendChild(div);
+      i++;
+      continue;
+    }
+
+    // 箇条書き・番号付きリストは「同じ種類の行が続く間」をひとかたまりにする
+    const listMatcher = bulletOf(line) ? bulletOf : numberedOf(line) ? numberedOf : null;
+    if (listMatcher) {
+      const list = document.createElement(listMatcher === bulletOf ? "ul" : "ol");
+      while (i < lines.length) {
+        const item = listMatcher(lines[i]);
+        if (!item) break;
+        const li = document.createElement("li");
+        appendInlineMarkdown(li, item[1]);
+        list.appendChild(li);
+        i++;
+      }
+      element.appendChild(list);
+      continue;
+    }
+
+    // それ以外は段落。空行か別ブロックの始まりが来るまでを1つの p にまとめ、
+    // 行の間には br を挟む（元の改行位置を保つため）
+    const p = document.createElement("p");
+    let isFirstLine = true;
+    while (i < lines.length) {
+      const current = lines[i];
+      if (current.trim() === "") break;
+      if (headingOf(current) || bulletOf(current) || numberedOf(current)) break;
+      if (!isFirstLine) p.appendChild(document.createElement("br"));
+      appendInlineMarkdown(p, current);
+      isFirstLine = false;
+      i++;
+    }
+    element.appendChild(p);
+  }
+}
+
+/**
  * メッセージ用のDOM要素を作って、チャット欄の最後に追加する。
  *
  * 入力:
@@ -33,6 +166,10 @@ let currentSessionId = null;
  *   - innerHTML += はチャット欄をまるごと作り直すため、
  *     直前に取得した吹き出しの参照が切れて、追記できなくなる
  *   - 入力文をそのままHTMLとして解釈させないため（<script> などを書かれても文字として表示される）
+ *
+ * Markdownの整形をAIの回答だけに限定している理由:
+ *   ユーザーが打ち込んだ "**" は記法ではなく、打った通りに表示されるべき文字。
+ *   自分の発言まで整形すると、書いた記号が勝手に消えて別物になってしまう。
  */
 function appendMessage(container, role, text) {
   const msg = document.createElement("div");
@@ -44,7 +181,13 @@ function appendMessage(container, role, text) {
 
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
-  bubble.textContent = text;
+  if (role === "ai") {
+    // AIの回答はMarkdown記法を含むので、DOMに組み立てて表示する。
+    // 履歴の復元（restoreChatHistory）もこの関数を通るため、過去の回答も同じように整形される
+    renderMarkdownInto(bubble, text);
+  } else {
+    bubble.textContent = text;
+  }
 
   msg.appendChild(avatar);
   msg.appendChild(bubble);
@@ -333,6 +476,11 @@ async function sendMessage() {
   let hasToken = false;
   let isFinished = false;
 
+  // 届いた断片をつないだ「整形前のテキスト」。
+  // 吹き出しのDOMは整形後の形になり元の記法が取り出せなくなるので、
+  // 完了時にMarkdownを組み立て直せるよう、素のテキストをこちらに持っておく
+  let rawAnswer = "";
+
   // 吹き出しをエラー表示に切り替える（見た目は is-error クラスで色だけ変える）
   const showError = (message) => {
     bubble.classList.add("is-error");
@@ -383,13 +531,20 @@ async function sendMessage() {
           bubble.textContent = "";
           hasToken = true;
         }
-        bubble.textContent += data.text || "";
+        // ストリーミング中は素のテキストのまま出す。
+        // まだ閉じていない "**" が太字になったり戻ったりしてちらつくので、
+        // 整形は文章が出そろう done まで待つ
+        rawAnswer += data.text || "";
+        bubble.textContent = rawAnswer;
         container.scrollTop = container.scrollHeight;
       } else if (event === "done") {
         // 完走。1文字も届いていなかった場合はその旨を出す（空の吹き出しを残さない）
         if (!hasToken) {
           showError("回答を生成できませんでした。もう一度お試しください。");
         } else {
+          // 全文が揃ったのでMarkdownを解釈した表示に差し替える
+          renderMarkdownInto(bubble, rawAnswer);
+          container.scrollTop = container.scrollHeight;
           isFinished = true;
         }
       } else if (event === "error") {
@@ -400,8 +555,10 @@ async function sendMessage() {
     // done も error も来ないまま切れた場合（通信断など）
     if (!isFinished) {
       if (hasToken) {
-        // 途中まで表示できているので、それは残したまま注記だけ足す
-        bubble.textContent += "（回答が途中で切断されました）";
+        // 途中まで表示できているので、それは残したまま注記だけ足す。
+        // 文章が途中で切れている＝記法も途中なので、整形はせず素のテキストのままにする
+        // （閉じていないリストや ** を無理に組み立てると、元の文と違う形になってしまう）
+        bubble.textContent = `${rawAnswer}（回答が途中で切断されました）`;
       } else {
         showError("回答が途中で切断されました。もう一度お試しください。");
       }
