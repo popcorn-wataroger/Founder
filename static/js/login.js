@@ -34,6 +34,9 @@ async function handleLogin() {
     initSourceManagement();
   } else {
     showScreen("screen-chat");
+    // 前回までの会話をサーバーから取り直して吹き出しを並べ直す。
+    // session_id をブラウザに保存していないため、ここで毎回取得する
+    restoreChatHistory();
   }
 }
 

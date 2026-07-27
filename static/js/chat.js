@@ -11,6 +11,14 @@
 // 吹き出しが混ざるのを防ぐためのフラグ
 let isSending = false;
 
+// 今つないでいる会話（セッション）のID。まだ会話が始まっていなければ null。
+//
+// ブラウザ（localStorage）には保存しない。保存すると
+// 「ブラウザが覚えている会話の持ち主」と「今ログインしている人」が
+// 食い違う場面（ユーザー切り替え）が生まれるため。
+// ログインのたびにサーバーから取り直すことで、この食い違いを起こさない。
+let currentSessionId = null;
+
 /**
  * メッセージ用のDOM要素を作って、チャット欄の最後に追加する。
  *
@@ -44,6 +52,105 @@ function appendMessage(container, role, text) {
   container.scrollTop = container.scrollHeight;
 
   return bubble;
+}
+
+/**
+ * チャット欄を「index.html に最初から書かれている状態」に戻す。
+ *
+ * 入力:  container … チャット欄の要素（#chat-messages）
+ * 出力:  なし（JSが追加した吹き出しだけを取り除く）
+ *
+ * なぜ必要か:
+ *   ログアウトは画面を切り替えるだけで #chat-messages の中身を消さない。
+ *   そのため、消さずに履歴を足すと再ログインのたびに二重・三重になる。
+ *   さらに別の社員でログインし直すと、前の人の会話が画面に残ったまま
+ *   下に新しい人の履歴が足され、他人の会話が混ざって見えてしまう。
+ *
+ * 判定方法に data-initial（HTML側の印）を使う理由:
+ *   - appendMessage が作る吹き出しにはこの属性が付かない。
+ *     つまり「印が無いもの＝JSが後から足したもの」と確実に区別できる
+ *   - first-child（先頭だけ残す）で判定すると、
+ *     将来 index.html の挨拶を2つに増やしたり、順番を変えたりしたときに
+ *     静かに壊れる。印を付けておけば位置や個数が変わっても判定は変わらない
+ */
+function resetChatMessages(container) {
+  // container.children は生きたコレクションで、消しながら回すと添字がずれる。
+  // Array.from でその時点の一覧をコピーしてから消す
+  for (const child of Array.from(container.children)) {
+    if (!child.hasAttribute("data-initial")) child.remove();
+  }
+}
+
+/**
+ * 前回までの会話を復元して、チャット欄に並べ直す。
+ *
+ * 入力:  なし（認証トークンは localStorage から読む）
+ * 出力:  なし（画面を書き換え、currentSessionId を設定する）
+ *
+ * 処理:
+ *   1. GET /api/chat/sessions で自分のセッション一覧を取る（新しい順）
+ *   2. context_type が 'general'（社員チャット）のものだけに絞り、先頭＝最新を選ぶ
+ *      1件も無ければ初回利用なので、何もせず終了（currentSessionId は null のまま）
+ *   3. GET /api/chat/sessions/{id}/messages で、そのセッションの全メッセージを取る
+ *   4. 返ってきた順（古い順）に吹き出しを作る
+ *
+ * DBの role とCSSのクラス名がずれている点に注意:
+ *   DBは 'user' / 'assistant'、画面は 'user' / 'ai' を使う。
+ *   ここで 'assistant' → 'ai' に変換しないと、AIの吹き出しの見た目が崩れる。
+ *
+ * エラーの扱い:
+ *   復元に失敗しても、新しく質問すること自体はできる。
+ *   そのため画面にはエラーを出さず console.error に留め、
+ *   「履歴が出ないだけ」の状態でチャットを使えるようにしている。
+ *
+ * index.html の #chat-messages には最初から挨拶の吹き出しが入っている。
+ * それは消さず、履歴はその下に追加する。
+ */
+async function restoreChatHistory() {
+  const container = document.getElementById("chat-messages");
+  if (!container) return;
+
+  // 前のログインで表示した吹き出しと、覚えていたセッションを先に捨てる。
+  // 通信に失敗してもここまでは必ず通るので、
+  // 別の社員でログインし直したときに前の人の会話が画面に残ることはない。
+  // currentSessionId も戻さないと、前の人のセッションに書き込もうとして弾かれる
+  resetChatMessages(container);
+  currentSessionId = null;
+
+  const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+
+  try {
+    // 1. セッション一覧（session_id の降順＝新しい順で返ってくる）
+    const sessionsRes = await fetch("/api/chat/sessions", { headers });
+    if (!sessionsRes.ok) {
+      console.error("チャット履歴の取得に失敗しました（セッション一覧）:", sessionsRes.status);
+      return;
+    }
+    const sessions = await sessionsRes.json();
+
+    // 2. 社員チャット（general）の最新セッションを選ぶ。
+    //    staff_inquiry（管理者が社員について聞いた会話）はこの画面のものではないので除く
+    const latest = sessions.find((s) => s.context_type === "general");
+    if (!latest) return; // 初めての利用。復元するものが無い
+
+    currentSessionId = latest.session_id;
+
+    // 3. そのセッションのメッセージ（message_id の昇順＝古い順で返ってくる）
+    const messagesRes = await fetch(`/api/chat/sessions/${currentSessionId}/messages`, { headers });
+    if (!messagesRes.ok) {
+      console.error("チャット履歴の取得に失敗しました（メッセージ）:", messagesRes.status);
+      return;
+    }
+    const messages = await messagesRes.json();
+
+    // 4. 届いた順に吹き出しを作る
+    for (const message of messages) {
+      appendMessage(container, message.role === "user" ? "user" : "ai", message.content);
+    }
+  } catch (e) {
+    // 通信エラーなど。履歴は出ないが、新規の質問は送れる状態のままにする
+    console.error("チャット履歴の復元に失敗しました:", e);
+  }
 }
 
 /**
@@ -155,6 +262,37 @@ async function extractHttpError(res) {
 }
 
 /**
+ * 会話の記録先セッションをまだ持っていなければ作る。
+ *
+ * 入力:  なし
+ * 出力:  なし（成功すれば currentSessionId が埋まる）
+ *
+ * 失敗しても例外は投げない。session_id が無いまま送信を続ければ、
+ * サーバー側が質問ごとにセッションを作って回答自体は返してくれる。
+ * 「履歴が1つにまとまらないこと」より「回答が返ること」を優先する。
+ */
+async function ensureSession() {
+  try {
+    const res = await fetch("/api/chat/sessions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${localStorage.getItem("token")}`,
+      },
+      body: JSON.stringify({ context_type: "general" }),
+    });
+    if (!res.ok) {
+      console.error("チャットセッションの作成に失敗しました:", res.status);
+      return;
+    }
+    const data = await res.json();
+    currentSessionId = data.session_id;
+  } catch (e) {
+    console.error("チャットセッションの作成に失敗しました:", e);
+  }
+}
+
+/**
  * メッセージを送信し、AIの回答をストリーミング表示する。
  *
  * 入力:  なし（#chat-input の値を読む）
@@ -163,13 +301,14 @@ async function extractHttpError(res) {
  * 処理:
  *   1. 入力文を自分の吹き出しとして表示し、入力欄を空にする
  *   2. AIの吹き出しを「入力中...」で先に作っておく（あとで中身を差し替える）
- *   3. POST /api/chat/stream を叩く
- *   4. 届いたイベントを種別ごとに処理する
+ *   3. 記録先のセッションが無ければ作る
+ *   4. POST /api/chat/stream を叩く
+ *   5. 届いたイベントを種別ごとに処理する
  *      sources … 参照ソースIDを受け取る（表示は今後の課題。要素に持たせておく）
  *      token   … 吹き出しに文字を追記する
  *      done    … 完了。ローディング状態を解除する
  *      error   … エラー文言を吹き出しに表示する
- *   5. 最後に必ず送信中フラグを戻す
+ *   6. 最後に必ず送信中フラグを戻す
  */
 async function sendMessage() {
   // 送信中なら何もしない（連打対策）
@@ -203,7 +342,14 @@ async function sendMessage() {
   };
 
   try {
-    // 3. ストリーミング用のAPIを叩く。
+    // 3. まだ会話が始まっていなければ、記録先のセッションを1つ作る。
+    //    ここで確保した session_id を以降の質問にも付けることで、
+    //    1回の会話が1つのセッションにまとまり、次回リロード時に復元できる。
+    if (currentSessionId === null) {
+      await ensureSession();
+    }
+
+    // 4. ストリーミング用のAPIを叩く。
     //    認証はログイン時に localStorage へ保存したトークンを Authorization で送る（他APIと同じ）
     const res = await fetch("/api/chat/stream", {
       method: "POST",
@@ -211,7 +357,7 @@ async function sendMessage() {
         "Content-Type": "application/json",
         Authorization: `Bearer ${localStorage.getItem("token")}`,
       },
-      body: JSON.stringify({ question: text }),
+      body: JSON.stringify({ question: text, session_id: currentSessionId }),
     });
 
     // ストリームが始まる前のエラー（未ログイン=401、権限=403、空の質問=400 など）
@@ -225,7 +371,7 @@ async function sendMessage() {
       return;
     }
 
-    // 4. イベントを種別ごとに処理する
+    // 5. イベントを種別ごとに処理する
     await readSseStream(res.body, ({ event, data }) => {
       if (event === "sources") {
         // 参照ソースID。画面表示は未実装なので、要素に持たせておくだけ
@@ -266,7 +412,7 @@ async function sendMessage() {
     console.error(e);
     if (!isFinished) showError("通信エラーが発生しました。接続を確認してください。");
   } finally {
-    // 5. 成功・失敗にかかわらず送信中フラグを戻す（戻さないと二度と送信できなくなる）
+    // 6. 成功・失敗にかかわらず送信中フラグを戻す（戻さないと二度と送信できなくなる）
     isSending = false;
   }
 }

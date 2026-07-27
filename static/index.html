@@ -735,7 +735,9 @@ body {
     <div class="chat-header-logout" onclick="logout()">ログアウト</div>
   </div>
   <div class="chat-messages" id="chat-messages">
-    <div class="msg ai">
+    <!-- data-initial: 最初から置いてある吹き出しの目印。
+         chat.js が履歴を並べ直すとき、この印が付いた要素は消さずに残す -->
+    <div class="msg ai" data-initial>
       <div class="msg-avatar">F</div>
       <div class="msg-bubble">こんにちは！社内ナレッジについて何でも聞いてください。マニュアルや規定をもとにお答えします。</div>
     </div>
