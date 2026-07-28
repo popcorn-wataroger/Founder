@@ -846,7 +846,7 @@ body {
       <div class="main-header">
         <h1 class="main-title">スタッフ一覧</h1>
       </div>
-      <<div class="staff-grid" id="staff-grid">
+      <div class="staff-grid" id="staff-grid">
       </div>
     </div>
 
@@ -858,17 +858,18 @@ body {
       </button>
       <div class="detail-grid">
         <div class="detail-profile">
-          <div class="detail-avatar" id="detail-avatar">奥</div>
-          <div class="detail-name" id="detail-name">奥村 仁哉</div>
-          <div class="detail-dept" id="detail-dept">営業部</div>
+          <div class="detail-avatar" id="detail-avatar"></div>
+          <div class="detail-name" id="detail-name"></div>
+          <div class="detail-dept" id="detail-dept"></div>
+          <!-- 値はすべて admin.js の renderStaffProfile が埋める（初期状態は空） -->
           <div class="detail-info">
-            <div class="detail-row"><span class="detail-label">社員コード</span><span class="detail-value">EMP001</span></div>
-            <div class="detail-row"><span class="detail-label">入社日</span><span class="detail-value">2020.4.1</span></div>
-            <div class="detail-row"><span class="detail-label">雇用形態</span><span class="detail-value">正社員</span></div>
-            <div class="detail-row"><span class="detail-label">性別</span><span class="detail-value">男性</span></div>
-            <div class="detail-row"><span class="detail-label">生年月日</span><span class="detail-value">1995.8.12</span></div>
-            <div class="detail-row"><span class="detail-label">家族構成</span><span class="detail-value">配偶者・子1</span></div>
-            <div class="detail-row"><span class="detail-label">最終ログイン</span><span class="detail-value">2025.5.3 14:22</span></div>
+            <div class="detail-row"><span class="detail-label">社員コード</span><span class="detail-value" id="detail-employee-code"></span></div>
+            <div class="detail-row"><span class="detail-label">入社日</span><span class="detail-value" id="detail-hire-date"></span></div>
+            <div class="detail-row"><span class="detail-label">雇用形態</span><span class="detail-value" id="detail-employment-type"></span></div>
+            <div class="detail-row"><span class="detail-label">性別</span><span class="detail-value" id="detail-gender"></span></div>
+            <div class="detail-row"><span class="detail-label">生年月日</span><span class="detail-value" id="detail-birth-date"></span></div>
+            <div class="detail-row"><span class="detail-label">家族構成</span><span class="detail-value" id="detail-family"></span></div>
+            <div class="detail-row"><span class="detail-label">最終ログイン</span><span class="detail-value" id="detail-last-login"></span></div>
           </div>
           <button class="detail-chat-btn" onclick="openAiChat()">このスタッフについてチャット</button>
         </div>
@@ -877,54 +878,20 @@ body {
             <div class="detail-section-header">
               <span>最近のトーク内容</span>
             </div>
-            <div class="detail-section-body">
-              <div class="chat-log-item" onclick="openChatLog()">
-                <span class="chat-log-time">5/3 14:20</span>
-                <span class="chat-log-text">有給休暇の申請方法を教えてください</span>
-              </div>
-              <div class="chat-log-item" onclick="openChatLog()">
-                <span class="chat-log-time">5/2 10:15</span>
-                <span class="chat-log-text">出張経費の精算について確認したい</span>
-              </div>
-              <div class="chat-log-item" onclick="openChatLog()">
-                <span class="chat-log-time">5/1 09:30</span>
-                <span class="chat-log-text">新入社員研修のスケジュールを教えて</span>
-              </div>
-              <div class="chat-log-item" onclick="openChatLog()">
-                <span class="chat-log-time">4/28 16:45</span>
-                <span class="chat-log-text">リモートワーク申請の手順は？</span>
-              </div>
-              <div class="chat-log-more" onclick="openChatLog()">すべてのトークを見る →</div>
-            </div>
+            <!-- トーク一覧は admin.js の renderStaffChatLogs が埋める（初期状態は空） -->
+            <div class="detail-section-body" id="detail-chat-logs"></div>
           </div>
           <div class="detail-section">
             <div class="detail-section-header">
               <span>過去のソース</span>
-              <button class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="alert('ソース追加ダイアログ（実装時）')">+ 追加</button>
+              <button class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="openStaffSourcePicker()">+ 追加</button>
+              <!-- 「+ 追加」から開くファイル選択欄。画面には出さず、クリックだけプログラムから発火させる -->
+              <input type="file" id="detail-source-file-input" style="display:none" accept=".pdf,.docx,.pptx,.txt" onchange="uploadStaffSource(this.files[0])">
             </div>
-            <div class="detail-section-body">
-              <div class="source-item">
-                <div class="source-item-info">
-                  <div class="source-item-icon" style="background:#FEF0ED; color:#C0462E;">PDF</div>
-                  <div><div class="source-item-name">Q1_評価レポート.pdf</div><div class="source-item-date">2025.4.15</div></div>
-                </div>
-                <button class="source-dl">ダウンロード</button>
-              </div>
-              <div class="source-item">
-                <div class="source-item-info">
-                  <div class="source-item-icon" style="background:#FFF4E6; color:#B87517;">PPT</div>
-                  <div><div class="source-item-name">社内プレゼン_4月.pptx</div><div class="source-item-date">2025.4.1</div></div>
-                </div>
-                <button class="source-dl">ダウンロード</button>
-              </div>
-              <div class="source-item">
-                <div class="source-item-info">
-                  <div class="source-item-icon" style="background:#FEF0ED; color:#C0462E;">PDF</div>
-                  <div><div class="source-item-name">目標設定シート_2025.pdf</div><div class="source-item-date">2025.1.10</div></div>
-                </div>
-                <button class="source-dl">ダウンロード</button>
-              </div>
-            </div>
+            <!-- アップロードの進捗・エラー表示（ソース管理画面と同じ source-status を流用） -->
+            <div id="detail-source-status" class="source-status" style="margin:0 20px;"></div>
+            <!-- ソース一覧は admin.js の renderStaffSources が埋める（初期状態は空） -->
+            <div class="detail-section-body" id="detail-sources"></div>
           </div>
         </div>
       </div>
@@ -936,20 +903,11 @@ body {
 <div id="modal-chatlog" class="modal-overlay" onclick="if(event.target===this)closeModal('modal-chatlog')">
   <div class="modal">
     <div class="modal-header">
-      <h3>奥村 仁哉 — トーク全文</h3>
+      <h3 id="modal-chatlog-title">トーク全文</h3>
       <button class="modal-close" onclick="closeModal('modal-chatlog')">×</button>
     </div>
-    <div class="modal-body">
-      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">こんにちは！何かお手伝いできることはありますか？</div></div>
-      <div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--teal-light);color:var(--teal);">奥</div><div class="msg-bubble" style="font-size:13px;">有給休暇の申請方法を教えてください</div></div>
-      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">有給休暇の申請は、社内ポータルの「勤怠管理」メニューから行えます。申請期限は取得日の3営業日前までです。詳しくは就業規則の第15条をご確認ください。</div></div>
-      <div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--teal-light);color:var(--teal);">奥</div><div class="msg-bubble" style="font-size:13px;">承認者は誰になりますか？</div></div>
-      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">承認者は直属の上長です。営業部の場合は部長の山本さんが承認者になります。3日以上の連続取得の場合は、役員の追加承認が必要です。</div></div>
-      <div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--teal-light);color:var(--teal);">奥</div><div class="msg-bubble" style="font-size:13px;">出張経費の精算について確認したい</div></div>
-      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">出張経費の精算は、出張完了後5営業日以内に経費精算システムから申請してください。領収書の原本提出が必要です。交通費・宿泊費・日当の上限額は出張規定に記載されています。</div></div>
-      <div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--teal-light);color:var(--teal);">奥</div><div class="msg-bubble" style="font-size:13px;">新入社員研修のスケジュールを教えて</div></div>
-      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">2025年度の新入社員研修は4月1日〜4月14日の2週間です。1週目はビジネスマナーと会社概要、2週目は部門別OJTになります。</div></div>
-    </div>
+    <!-- メッセージは admin.js の openChatLog が埋める（初期状態は空） -->
+    <div class="modal-body" id="modal-chatlog-body"></div>
   </div>
 </div>
 
@@ -1009,12 +967,7 @@ function showAdminTab(tab) {
   }
 }
 
-function showStaffDetail(name, dept) {
-  document.getElementById('detail-name').textContent = name;
-  document.getElementById('detail-dept').textContent = dept;
-  document.getElementById('detail-avatar').textContent = name.charAt(0);
-  showAdminTab('detail');
-}
+// showStaffDetail(userId) は admin.js にある（APIから実データを取得して描画する）
 
 function sendAiChat() {
   const input = document.getElementById('ai-chat-input');
@@ -1030,7 +983,7 @@ function sendAiChat() {
   }, 800);
 }
 
-function openChatLog() { document.getElementById('modal-chatlog').classList.add('active'); }
+// openChatLog(sessionId) は admin.js にある（セッションのメッセージを取得して表示する）
 function openAiChat() { document.getElementById('modal-aichat').classList.add('active'); }
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 </script>
