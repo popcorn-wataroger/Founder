@@ -70,7 +70,9 @@ async def get_admin_users(token: dict = Depends(require_admin)):
 
 
 @app.get("/api/admin/users/{user_id}")
-async def get_admin_user_detail(user_id: str, token: dict = Depends(require_admin)):
+async def get_admin_user_detail(
+    user_id: str, token: dict = Depends(require_admin)
+) -> dict[str, str]:
     """指定した社員1人分の基本情報を返す（社長専用）。
 
     入力:

@@ -690,10 +690,24 @@ async function uploadStaffSource(file) {
       headers: authHeaders(),
       body: formData,
     });
-    const data = await res.json();
+
+    // レスポンスがJSONとは限らないので、パースの失敗は握りつぶして空の入れ物にする。
+    // なぜ必要か:
+    //   502や504のときはサーバーではなく手前のプロキシがHTMLのエラーページを返す。
+    //   res.ok を見る前に res.json() を呼ぶと、そこで SyntaxError になって
+    //   利用者の画面に「Unexpected token '<'」という中身のわからない文字が出てしまう。
+    //   先にパースを切り離しておけば、下の判定で「アップロードに失敗しました」を出せる。
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (e) {
+      data = {};
+    }
+
     if (!res.ok) throw new Error(data.detail || "アップロードに失敗しました");
 
-    setStaffSourceStatus(`「${data.file_name}」を登録しました`, "success");
+    // 成功時は必ず file_name が返るが、万一欠けていても選んだファイル名で表示する
+    setStaffSourceStatus(`「${data.file_name || file.name}」を登録しました`, "success");
     // 登録した1件が一覧に出るよう取り直す（アップロード中に別の社員を開いていたら何もしない）
     if (isStaffStillOpen(userId)) await loadStaffSources(userId);
   } catch (e) {

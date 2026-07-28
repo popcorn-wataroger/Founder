@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -44,7 +45,9 @@ async def list_sources(token: dict = Depends(require_admin)):
 
 
 @admin_router.get("/users/{user_id}/sources")
-async def list_user_sources(user_id: str, token: dict = Depends(require_admin)):
+async def list_user_sources(
+    user_id: str, token: dict = Depends(require_admin)
+) -> list[dict[str, Any]]:
     """指定した社員の「個別ソース」だけを一覧で返す（社長専用）。
 
     入力:

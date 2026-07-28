@@ -116,6 +116,10 @@ def test_個別ソースは本人のものだけ返る(client: TestClient, temp_
     assert all(s["scope"] == "individual" for s in sources)
     assert all(s["owner_user_id"] == "2" for s in sources)
 
+    # file_path（サーバー内部の保存先）は返さない。
+    # 画面には不要な情報で、外に出すと保存場所の構造が分かってしまうため
+    assert all("file_path" not in s for s in sources)
+
 
 def test_個別ソースが0件でも空リストを返す(client: TestClient, temp_db: None) -> None:
     """他人のソースだけがある状態で、本人の欄には何も出てこない。"""
