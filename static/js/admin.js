@@ -601,7 +601,21 @@ function renderChatLogMessages(container, messages) {
   container.scrollTop = 0;
 }
 
-// 吹き出し1件分の要素を組み立てる（社員＝名前の頭文字、AI＝F）
+/**
+ * 吹き出し1件分の要素を組み立てる（社員＝名前の頭文字、AI＝F）。
+ *
+ * AIの回答だけ renderMarkdownInto を通す理由:
+ *   AIの回答には "###" や "- " などのMarkdown記法が含まれる。
+ *   textContent で入れると記号がそのまま画面に出てしまうため、
+ *   社員のチャット画面（chat.js の appendMessage）と同じ整形を通す。
+ *   社員の発言を整形しないのも同じ理由で、打ち込んだ "**" は記法ではなく
+ *   打った通りに表示されるべき文字だから（PR #52 と同じ方針）。
+ *
+ * renderMarkdownInto は chat.js のグローバル関数:
+ *   index.html が chat.js → admin.js の順で読み込んでいるので、そのまま呼べる。
+ *   整形の中身も createElement で組み立てる作りなので、
+ *   textContent と同じくHTMLとしては解釈されない（XSSにならない）。
+ */
 function buildChatLogMessage(cssRole, content) {
   const msg = document.createElement("div");
   msg.className = `msg ${cssRole}`;
@@ -616,8 +630,13 @@ function buildChatLogMessage(cssRole, content) {
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
   bubble.style.fontSize = "13px";
-  // チャット本文は社員が打った文字列とAIの回答。textContent で入れてHTMLとして解釈させない
-  bubble.textContent = content;
+  if (cssRole === "ai") {
+    // AIの回答はMarkdown記法を含むので、chat.js と同じ整形を通してDOMに組み立てる
+    renderMarkdownInto(bubble, content);
+  } else {
+    // 社員の発言は打った通りに出す。textContent で入れてHTMLとして解釈させない
+    bubble.textContent = content;
+  }
 
   msg.appendChild(avatar);
   msg.appendChild(bubble);
