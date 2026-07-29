@@ -643,6 +643,329 @@ function buildChatLogMessage(cssRole, content) {
   return msg;
 }
 
+// ===== このスタッフについてチャット（AIチャットモーダル） =====
+//
+// 社長が社員データ画面から「この社員について」質問する画面。
+// 社員用チャット（chat.js）との違いは次の2点だけで、表示の仕組みは同じものを使う。
+//   - 叩くAPIが POST /api/chat/staff-inquiry（対象社員を target_user_id で指定する）
+//   - モーダルを閉じると会話が終わる（次に開くと新しいセッションになる）
+
+// このモーダルで今つないでいる会話（セッション）のID。会話を始めていなければ null。
+// 閉じるときに null に戻すので、開き直すと必ず新しい会話として始まる
+let staffChatSessionId = null;
+
+// 送信中かどうか。連打で複数のストリームが同時に走り、吹き出しが混ざるのを防ぐ
+let isStaffChatSending = false;
+
+/**
+ * 「このスタッフについてチャット」ボタンで、AIチャットモーダルを開く。
+ *
+ * 入力: なし（currentStaffUserId / currentStaffName を見る）
+ * 出力: なし（モーダルを開き、中身を初期状態にする）
+ *
+ * 処理:
+ *   1. 見出しとアバターを、いま開いている社員に合わせて書き換える
+ *   2. 前回の会話の吹き出しを消し、案内文だけを置く
+ *   3. セッションと送信中フラグを初期化する（＝新しい会話として始まる）
+ *
+ * 毎回中身を作り直す理由:
+ *   別の社員の画面から開き直したときに、前の社員についての会話が残っていると、
+ *   どの社員の話か分からなくなる。会話がモーダル1回分で完結する作りに揃えている。
+ */
+function openAiChat() {
+  const name = currentStaffName || "このスタッフ";
+
+  document.getElementById("modal-aichat-avatar").textContent = firstChar(currentStaffName);
+  document.getElementById("modal-aichat-title").textContent = `${name} についてチャット`;
+
+  // 会話をリセットする（閉じ忘れても、開いた時点で必ず新しい会話になる）
+  staffChatSessionId = null;
+  isStaffChatSending = false;
+  setStaffChatSending(false);
+
+  const container = document.getElementById("ai-chat-body");
+  container.textContent = "";
+  container.appendChild(
+    buildAiChatMessage(
+      "ai",
+      `${name} の個別ソースと全社共通ソースの両方を参照してお答えします。何を知りたいですか？`
+    )
+  );
+
+  document.getElementById("ai-chat-input").value = "";
+  document.getElementById("modal-aichat").classList.add("active");
+}
+
+/**
+ * AIチャットモーダルを閉じ、会話を終了させる。
+ *
+ * 入力: なし
+ * 出力: なし（モーダルを閉じ、セッションを捨てる）
+ *
+ * closeModal（index.html の共通関数）を使わない理由:
+ *   closeModal はモーダルを見えなくするだけで、会話の状態には手を触れない。
+ *   このモーダルは「閉じたら会話が終わる」仕様なので、
+ *   セッションIDを捨てる後始末をここで行う。
+ *   捨てないと、次に開いたとき前回の続きとして同じセッションに書き込まれてしまう。
+ */
+function closeAiChat() {
+  document.getElementById("modal-aichat").classList.remove("active");
+  staffChatSessionId = null;
+  isStaffChatSending = false;
+  setStaffChatSending(false);
+}
+
+/**
+ * 吹き出し1件分の要素を組み立てる（社長＝「社」、AI＝「F」）。
+ *
+ * 入力:
+ *   cssRole … 'user'（質問した社長）か 'ai'（Founder）
+ *   text    … 表示する文字列
+ * 出力:
+ *   組み立てた .msg 要素
+ *
+ * buildChatLogMessage（トーク全文モーダル用）と分けている理由:
+ *   あちらの 'user' は「社員本人」なのでアバターに社員名の頭文字を出す。
+ *   こちらの 'user' は「質問している社長」なので、社員の頭文字を出すと誰の発言か誤解される。
+ *   共通なのは中身の描画（renderMarkdownInto）だけなので、そこだけを使い回す。
+ */
+function buildAiChatMessage(cssRole, text) {
+  const msg = document.createElement("div");
+  msg.className = `msg ${cssRole}`;
+
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.style.width = "28px";
+  avatar.style.height = "28px";
+  avatar.style.fontSize = "10px";
+  if (cssRole === "user") {
+    avatar.style.background = "var(--accent-light)";
+    avatar.style.color = "var(--accent)";
+  }
+  avatar.textContent = cssRole === "user" ? "社" : "F";
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  bubble.style.fontSize = "13px";
+  if (cssRole === "ai") {
+    // AIの回答はMarkdown記法を含むので、chat.js と同じ整形を通してDOMに組み立てる
+    renderMarkdownInto(bubble, text);
+  } else {
+    // 社長が打った文字は打った通りに出す（textContent なのでHTMLとして解釈されない）
+    bubble.textContent = text;
+  }
+
+  msg.appendChild(avatar);
+  msg.appendChild(bubble);
+  return msg;
+}
+
+/**
+ * 吹き出しをチャット欄の最後に足し、その吹き出し要素を返す。
+ *
+ * 返り値を吹き出し（.msg-bubble）にしている理由:
+ *   AIの回答はストリーミングで少しずつ届く。
+ *   先に空の吹き出しを作っておき、届いた断片をこの要素に追記していくため。
+ */
+function appendAiChatMessage(cssRole, text) {
+  const container = document.getElementById("ai-chat-body");
+  const msg = buildAiChatMessage(cssRole, text);
+  container.appendChild(msg);
+  container.scrollTop = container.scrollHeight;
+  return msg.querySelector(".msg-bubble");
+}
+
+/**
+ * 送信中の見た目（ローディング状態）を切り替える。
+ *
+ * 入力: sending … 送信中なら true
+ * 出力: なし（入力欄と送信ボタンの操作可否を切り替える）
+ *
+ * 回答が返ってくるまで数秒かかるため、押せる見た目のままだと
+ * 利用者が反応が無いと感じて連打してしまう。
+ * 「入力中...」の吹き出し（sendAiChat 側）と合わせて、処理中であることを示す。
+ */
+function setStaffChatSending(sending) {
+  document.getElementById("ai-chat-input").disabled = sending;
+  document.getElementById("ai-chat-send").disabled = sending;
+}
+
+/**
+ * このモーダルの会話を記録するセッションを、まだ持っていなければ作る。
+ *
+ * 入力: なし
+ * 出力: なし（成功すれば staffChatSessionId が埋まる）
+ *
+ * context_type に 'staff_inquiry' を指定する理由:
+ *   社長自身の通常チャットと区別するため。社員データ画面から聞いた会話が
+ *   社員用チャット画面の履歴として復元されてしまうのを防ぐ。
+ *
+ * 失敗しても例外は投げない:
+ *   session_id が無いままでも、サーバー側が質問ごとにセッションを作って回答は返す。
+ *   「履歴が1つにまとまらないこと」より「回答が返ること」を優先する（chat.js と同じ方針）。
+ */
+async function ensureStaffChatSession() {
+  try {
+    const res = await fetch("/api/chat/sessions", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ context_type: "staff_inquiry" }),
+    });
+    if (!res.ok) {
+      console.error("チャットセッションの作成に失敗しました:", res.status);
+      return;
+    }
+    const data = await res.json();
+    staffChatSessionId = data.session_id;
+  } catch (e) {
+    console.error("チャットセッションの作成に失敗しました:", e);
+  }
+}
+
+/**
+ * 質問を送り、AIの回答をストリーミング表示する。
+ *
+ * 入力: なし（#ai-chat-input の値と currentStaffUserId を読む）
+ * 出力: なし（モーダルの中身を書き換える）
+ *
+ * 処理:
+ *   1. 送信中・空入力・対象社員が不明な場合は何もしない
+ *   2. 質問を社長の吹き出しとして表示し、入力欄を空にする
+ *   3. AIの吹き出しを「入力中...」で先に作る（ローディング表示）
+ *   4. 記録先のセッションが無ければ作る
+ *   5. POST /api/chat/staff-inquiry を叩き、届いたSSEイベントを種別ごとに処理する
+ *      sources … 参照ソースIDを受け取る（表示は未実装。要素に持たせておく）
+ *      token   … 吹き出しに文字を追記する
+ *      done    … 完了。全文が揃ったのでMarkdownを整形して差し替える
+ *      error   … エラー文言を吹き出しに表示する
+ *   6. 成功・失敗にかかわらず送信中フラグと入力欄を元に戻す
+ *
+ * chat.js の関数をそのまま使っている部分:
+ *   readSseStream / parseSseEvent … SSEの受信（イベントの区切りの扱いが同じため）
+ *   renderMarkdownInto            … 回答のMarkdown整形（社員チャットと同じ見た目にする）
+ *   extractHttpError              … ストリーム開始前のHTTPエラー文言の取り出し
+ *   index.html が chat.js → admin.js の順で読み込んでいるので、そのまま呼べる。
+ */
+async function sendAiChat() {
+  if (isStaffChatSending) return;
+
+  const input = document.getElementById("ai-chat-input");
+  const text = input.value.trim();
+  if (!text) return;
+
+  // どの社員についての質問か分からない状態では送らない（宛先のない質問を防ぐ）
+  const targetUserId = currentStaffUserId;
+  if (!targetUserId) {
+    appendAiChatMessage("ai", "対象の社員が特定できません。スタッフ一覧から開き直してください。");
+    return;
+  }
+
+  const container = document.getElementById("ai-chat-body");
+
+  isStaffChatSending = true;
+  setStaffChatSending(true);
+  input.value = "";
+
+  // 1. 社長の質問を吹き出しとして表示する
+  appendAiChatMessage("user", text);
+
+  // 2. AIの吹き出しを先に作る（最初の断片が届いた時点で中身を差し替える）
+  const bubble = appendAiChatMessage("ai", "入力中...");
+
+  // 回答が1文字でも届いたか / エラーや完了を表示済みかを覚えておく
+  let hasToken = false;
+  let isFinished = false;
+
+  // 届いた断片をつないだ「整形前のテキスト」。
+  // 吹き出しのDOMは整形後の形になり元の記法が取り出せなくなるので、
+  // 完了時にMarkdownを組み立て直せるよう、素のテキストをこちらに持っておく
+  let rawAnswer = "";
+
+  const showError = (message) => {
+    bubble.classList.add("is-error");
+    bubble.textContent = message;
+    isFinished = true;
+    container.scrollTop = container.scrollHeight;
+  };
+
+  try {
+    // 3. まだ会話が始まっていなければ、記録先のセッションを1つ作る
+    if (staffChatSessionId === null) {
+      await ensureStaffChatSession();
+    }
+
+    // 4. 社員別チャットのAPIを叩く。target_user_id で「誰について」の質問かを伝える
+    const res = await fetch("/api/chat/staff-inquiry", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        question: text,
+        target_user_id: targetUserId,
+        session_id: staffChatSessionId,
+      }),
+    });
+
+    // ストリームが始まる前のエラー（権限=403、社員が見つからない=404、空の質問=400 など）
+    if (!res.ok) {
+      showError(await extractHttpError(res));
+      return;
+    }
+
+    if (!res.body) {
+      showError("この環境ではストリーミング表示に対応していません");
+      return;
+    }
+
+    // 5. イベントを種別ごとに処理する（社員チャットと同じ扱い）
+    await readSseStream(res.body, ({ event, data }) => {
+      if (event === "sources") {
+        // 参照ソースID。画面表示は未実装なので、要素に持たせておくだけ
+        const sources = data.referenced_sources || [];
+        bubble.dataset.referencedSources = sources.join(",");
+      } else if (event === "token") {
+        // 最初の断片が来たら「入力中...」を消してから追記を始める
+        if (!hasToken) {
+          bubble.textContent = "";
+          hasToken = true;
+        }
+        // ストリーミング中は素のテキストのまま出す（記法が途中だとちらつくため）
+        rawAnswer += data.text || "";
+        bubble.textContent = rawAnswer;
+        container.scrollTop = container.scrollHeight;
+      } else if (event === "done") {
+        if (!hasToken) {
+          showError("回答を生成できませんでした。もう一度お試しください。");
+        } else {
+          // 全文が揃ったのでMarkdownを解釈した表示に差し替える
+          renderMarkdownInto(bubble, rawAnswer);
+          container.scrollTop = container.scrollHeight;
+          isFinished = true;
+        }
+      } else if (event === "error") {
+        showError(data.message || "回答の生成中にエラーが発生しました");
+      }
+    });
+
+    // done も error も来ないまま切れた場合（通信断など）
+    if (!isFinished) {
+      if (hasToken) {
+        // 途中まで表示できているものは残し、注記だけ足す（整形はしない）
+        bubble.textContent = `${rawAnswer}（回答が途中で切断されました）`;
+      } else {
+        showError("回答が途中で切断されました。もう一度お試しください。");
+      }
+      container.scrollTop = container.scrollHeight;
+    }
+  } catch (e) {
+    console.error(e);
+    if (!isFinished) showError("通信エラーが発生しました。接続を確認してください。");
+  } finally {
+    // 6. 成功・失敗にかかわらず元に戻す（戻さないと二度と送信できなくなる）
+    isStaffChatSending = false;
+    setStaffChatSending(false);
+  }
+}
+
 // 「+ 追加」ボタン：隠しファイル選択欄を開く
 function openStaffSourcePicker() {
   document.getElementById("detail-source-file-input").click();
