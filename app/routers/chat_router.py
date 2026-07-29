@@ -1,6 +1,7 @@
 import json
 import logging
 from collections.abc import Callable, Iterator
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -10,6 +11,7 @@ from app.chat_history import (
     add_message,
     create_session,
     get_messages,
+    get_session,
     get_session_owner,
     get_sessions,
 )
@@ -29,8 +31,12 @@ logger = logging.getLogger(__name__)
 
 
 # 会話の種類。general=通常のチャット、staff_inquiry=社長が特定社員について質問する会話
-# （staff_inquiry の中身の実装は #24 の範囲。ここでは値として受け取れるようにするだけ）
-VALID_CONTEXT_TYPES = {"general", "staff_inquiry"}
+ContextType = Literal["general", "staff_inquiry"]
+
+# 外から送られてきた文字列が想定内の値かを確かめるための集合。
+# 型を set[ContextType] にしてあるので、ContextType に無い値をうっかりここへ足すと
+# mypy がエラーにする（種類を増やすときに片方だけ直して食い違うのを防ぐ）
+VALID_CONTEXT_TYPES: set[ContextType] = {"general", "staff_inquiry"}
 
 
 class ChatRequest(BaseModel):
@@ -72,16 +78,16 @@ class SessionRequest(BaseModel):
 def _resolve_session(
     requested_session_id: int | None,
     user_id: str,
-    context_type: str = "general",
+    context_type: ContextType = "general",
 ) -> int | None:
     """会話をどのセッションに記録するかを決める（チャット系のPOST APIで共用）。
 
     入力:
         requested_session_id … リクエストで指定された session_id（未指定なら None）
         user_id              … トークンから取り出した、質問した本人の user_id
-        context_type         … 新しく作る場合の会話の種類。
+        context_type         … 今おこなっている会話の種類。
                                'general'（通常チャット）か 'staff_inquiry'（社員別チャット）。
-                               既存セッションの続きを指定された場合は使わない
+                               新規作成時はこの値で作り、継続時は既存セッションと一致するか確かめる
 
     出力:
         記録先の session_id。セッションを用意できなかった場合のみ None
@@ -89,6 +95,7 @@ def _resolve_session(
     処理:
         - session_id が指定されている場合:
             持ち主を確認し、存在しなければ404、自分のものでなければ403にする
+            さらに会話の種類が一致するかを確認し、食い違えば400にする
         - 指定が無い場合:
             新しいセッションを自動で作る（既存の動作を維持）
             作成に失敗しても回答は返したいので、例外は握って None を返す
@@ -99,18 +106,32 @@ def _resolve_session(
         （社長のチャット履歴に、社員が偽の発言を紛れ込ませる等）
         そのため「そのセッションの持ち主 == 自分」でなければ403で拒否する。
         閲覧（GET）と違い書き込みなので、社長であっても他人のセッションには追記させない。
+
+    会話の種類も確かめる理由:
+        持ち主が同じでも、通常チャットのセッションIDを社員別チャットのAPIに渡せば、
+        1つの会話の中に参照範囲の違う発言が混ざってしまう。
+        社長が自分の通常チャットのIDを /api/chat/staff-inquiry に渡した場合、
+        後から履歴を読み返しても、どの発言がどの社員について聞いたものか区別できない。
+        そのため種類が食い違う場合は書き込ませず400で拒否する。
     """
     # 継続する会話が指定された場合。まず「本当に自分のセッションか」を確認する
     if requested_session_id is not None:
-        owner_user_id = get_session_owner(requested_session_id)
+        session = get_session(requested_session_id)
 
         # 存在しないセッションを指定された場合は404
-        if owner_user_id is None:
+        if session is None:
             raise HTTPException(status_code=404, detail="セッションが見つかりません")
 
         # 他人のセッションへの書き込みは拒否する（社長であっても他人の会話には追記させない）
-        if owner_user_id != user_id:
+        if session["user_id"] != user_id:
             raise HTTPException(status_code=403, detail="このセッションには投稿できません")
+
+        # 種類の違う会話に混ぜて記録するのは拒否する
+        if session["context_type"] != context_type:
+            raise HTTPException(
+                status_code=400,
+                detail="このセッションでは種類の違う会話は続けられません",
+            )
 
         return requested_session_id
 

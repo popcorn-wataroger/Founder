@@ -10,6 +10,7 @@
     3. セッションの持ち主が「質問した社長」であり、
        context_type が 'staff_inquiry' で記録されること
     4. 存在しない社員・管理者自身を指定した場合は404になること
+    5. 種類（context_type）の違うセッションに混ぜて記録できないこと
 
 外部サービスには繋がない:
     answer_question_stream（GeminiとQdrantを呼ぶ）を monkeypatch で差し替え、
@@ -229,3 +230,68 @@ def test_他人のセッションには書き込めない(temp_db: None, recorde
     )
 
     assert response.status_code == 403
+
+
+def test_通常チャットのセッションを指定すると400(temp_db: None, recorded: RecordedCall) -> None:
+    """自分のセッションでも、種類が general なら社員別チャットの記録先にはできない。
+
+    持ち主が同じでも、1つの会話に参照範囲の違う発言が混ざると、
+    後から履歴を読み返したときに、どの発言がどの社員について聞いたものか区別できない。
+    """
+    # 社長自身の「通常チャット」のセッションを先に作っておく
+    general_session_id = create_session(user_id=ADMIN_USER_ID, context_type="general")
+
+    response = TestClient(app).post(
+        "/api/chat/staff-inquiry",
+        json={
+            "question": "評価は？",
+            "target_user_id": STAFF_USER_ID,
+            "session_id": general_session_id,
+        },
+        headers=_admin_headers(),
+    )
+
+    assert response.status_code == 400
+    # 検索・生成まで進んでいない（弾いてから生成する順序になっている）
+    assert recorded.target_user_id is None
+
+
+def test_社員別チャットのセッションは続けられる(temp_db: None, recorded: RecordedCall) -> None:
+    """種類が一致していれば、同じセッションの続きとして記録できる（正常系）。"""
+    session_id = create_session(user_id=ADMIN_USER_ID, context_type="staff_inquiry")
+
+    response = TestClient(app).post(
+        "/api/chat/staff-inquiry",
+        json={
+            "question": "評価は？",
+            "target_user_id": STAFF_USER_ID,
+            "session_id": session_id,
+        },
+        headers=_admin_headers(),
+    )
+    assert response.status_code == 200
+
+    conn = database.get_connection()
+    sessions = conn.execute("SELECT session_id FROM chat_sessions").fetchall()
+    messages = conn.execute("SELECT session_id FROM chat_messages").fetchall()
+    conn.close()
+
+    # 新しいセッションは作られず、指定したセッションに追記されている
+    assert len(sessions) == 1
+    assert [m["session_id"] for m in messages] == [session_id, session_id]
+
+
+def test_社員別チャットのセッションを通常チャットに指定すると400(
+    temp_db: None, recorded: RecordedCall
+) -> None:
+    """逆向き（staff_inquiry のセッションを /api/chat/stream に渡す）も同じく拒否する。"""
+    staff_session_id = create_session(user_id=ADMIN_USER_ID, context_type="staff_inquiry")
+
+    response = TestClient(app).post(
+        "/api/chat/stream",
+        json={"question": "有給は何日？", "session_id": staff_session_id},
+        headers=_admin_headers(),
+    )
+
+    assert response.status_code == 400
+    assert recorded.question is None
