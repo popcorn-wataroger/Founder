@@ -155,13 +155,65 @@ def save_chunks(
     return ids
 
 
-def search(question: str, role: str, top_k: int = 3) -> list[dict]:
+def _build_staff_filter(target_user_id: str) -> Filter:
+    """「全社共通ソース ＋ 指定した社員1人の個別ソース」だけに絞る条件を組み立てる。
+
+    入力:
+        target_user_id … 対象社員の user_id（この社員の個別ソースだけを許可する）
+
+    出力:
+        Qdrant の Filter オブジェクト
+
+    組み立てる条件（OR）:
+        - scope == "common"
+        - または（scope == "individual" かつ owner_user_id == target_user_id）
+
+    Qdrantの書き方:
+        should = 「並べた条件のどれか1つでも満たせばよい」（＝OR）
+        must   = 「並べた条件をすべて満たす必要がある」（＝AND）
+        should の中に Filter を入れ子にできるので、
+        「共通」または「個別 かつ 本人」という OR の中の AND を表現できる。
+
+    なぜ owner_user_id だけで絞らないか:
+        scope も併せて見ることで、万一 owner_user_id が入った共通ソースが
+        紛れ込んでも、意図しない経路で個別扱いにならない。
+        条件を Issue の文言どおりそのまま書き下しておく方が、後から読んで検証しやすい。
+
+    なぜこの関数が必要か（重要）:
+        社長(admin)の通常検索はフィルタなし＝全社員の個別ソースが対象になる。
+        その状態で「奥村さんについて」と質問すると、別の社員の評価資料が
+        根拠に混ざりうる。社員データ画面からの問い合わせでは、
+        対象社員以外の個別ソースを検索の時点で除外する必要がある。
+    """
+    return Filter(
+        should=[
+            # 条件A: 全社共通ソース
+            FieldCondition(key="scope", match=MatchValue(value="common")),
+            # 条件B: 個別ソース かつ 持ち主が対象社員
+            Filter(
+                must=[
+                    FieldCondition(key="scope", match=MatchValue(value="individual")),
+                    FieldCondition(key="owner_user_id", match=MatchValue(value=target_user_id)),
+                ]
+            ),
+        ]
+    )
+
+
+def search(
+    question: str,
+    role: str,
+    top_k: int = 3,
+    target_user_id: str | None = None,
+) -> list[dict]:
     """質問に意味が近いチャンクを、権限に応じた範囲から上位順に返す。
 
     入力:
-        question … ユーザーからの質問文
-        role     … 質問した人の役割。'admin'（社長）か 'employee'（社員）
-        top_k    … 上位何件を返すか（既定は3件）
+        question       … ユーザーからの質問文
+        role           … 質問した人の役割。'admin'（社長）か 'employee'（社員）
+        top_k          … 上位何件を返すか（既定は3件）
+        target_user_id … 社員データ画面から「この社員について」質問する場合の対象社員の user_id。
+                         省略時（None）は従来どおりの挙動になる
 
     出力:
         質問に近い順に並んだ辞書のリスト（最大 top_k 件）
@@ -180,6 +232,16 @@ def search(question: str, role: str, top_k: int = 3) -> list[dict]:
         検索でヒットし、AIの回答に混ざってしまう。ここが情報漏洩を防ぐ最後の砦になる。
         社長(admin)はフィルタを掛けず、共通・個別すべてのソースを検索できる。
 
+    判定の順番（この順である理由）:
+        1. 社員(admin以外)          → 共通のみ。target_user_id が渡ってきても無視する
+        2. 社長 かつ target_user_id → 共通 ＋ その社員の個別のみ
+        3. 社長 かつ 指定なし        → 絞り込みなし（従来どおり）
+
+        社員の判定を先に置くことで、万一 target_user_id が社員の経路から
+        渡ってきても、社員が個別ソースに届くことはない。
+        呼び出し元（/api/chat/staff-inquiry）も require_admin で守っているので、
+        入口と検索の二段構えになる。
+
     なぜベクトルで検索できるか:
         保存時に各チャンクを同じ方法でベクトル化してある。
         質問も同じ方法でベクトル化し、cosine距離が近いもの＝意味が近いものを探す。
@@ -188,13 +250,19 @@ def search(question: str, role: str, top_k: int = 3) -> list[dict]:
     query_vector = embed_text(question)
 
     # 2. 権限に応じた検索範囲の絞り込み条件を作る
-    if role == "admin":
-        # 社長は全ソースを検索できるので、絞り込みなし
-        query_filter = None
-    else:
+    query_filter: Filter | None
+    if role != "admin":
         # 社員は共通ソースのみ。payload の scope が "common" のものだけを検索対象にする
         # （must = すべての条件を満たすもの、の意味）
+        # target_user_id が渡ってきても、ここでは一切見ない（社員に個別ソースは開かない）
         query_filter = Filter(must=[FieldCondition(key="scope", match=MatchValue(value="common"))])
+    elif target_user_id is not None:
+        # 社長が「特定の社員について」質問した場合。
+        # 共通ソースと、その社員の個別ソースだけに絞る（他の社員の個別ソースは対象外）
+        query_filter = _build_staff_filter(target_user_id)
+    else:
+        # 社長の通常検索。全ソースを検索できるので、絞り込みなし
+        query_filter = None
 
     # 3. そのベクトルに近いポイントを top_k 件検索する
     #    query_filter を渡すと、条件に合うポイントの中だけで「近いもの」を探す
