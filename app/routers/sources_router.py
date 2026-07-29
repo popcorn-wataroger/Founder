@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -13,6 +14,10 @@ from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
 from app.vectorizer import embed_text, extract_text, split_into_chunks
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
+
+# 管理者専用のソースAPIをまとめるルーター。URLは /api/admin から始まる
+# （社長が社員データ画面で、その社員の個別ソースだけを見るために使う）
+admin_router = APIRouter(prefix="/api/admin", tags=["sources"])
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,49 @@ async def list_sources(token: dict = Depends(require_admin)):
     conn = get_connection()
     rows = conn.execute("SELECT * FROM sources ORDER BY uploaded_at DESC").fetchall()
     conn.close()
+    return [dict(row) for row in rows]
+
+
+@admin_router.get("/users/{user_id}/sources")
+async def list_user_sources(
+    user_id: str, token: dict = Depends(require_admin)
+) -> list[dict[str, Any]]:
+    """指定した社員の「個別ソース」だけを一覧で返す（社長専用）。
+
+    入力:
+        user_id … ソースを見たい社員の user_id（URLパスで指定）
+        token   … require_admin が返すログイン情報（社長でなければ403で弾かれている）
+
+    出力:
+        その社員の個別ソースの一覧（登録日の新しい順）。
+        各件に source_id / file_name / file_type / scope / owner_user_id / uploaded_at を含む
+
+    使いどころ:
+        社員データ画面の「過去のソース」欄。その社員に紐づく資料だけを並べる。
+
+    絞り込み条件について（権限ルール）:
+        WHERE に scope='individual' と owner_user_id=? の両方を必ず付ける。
+        - owner_user_id だけで絞ると、共通ソースは owner_user_id が NULL なので
+          混ざりはしないが、条件が「持ち主」だけになり意図が読み取りづらい
+        - scope だけで絞ると、他人の個別ソースまで出てしまう（絶対に不可）
+        この欄は「その社員の資料」を並べる場所なので、全社共通ソースも出さない。
+
+    file_path を返さない理由:
+        file_path はサーバー内部の保存先パスで、画面には不要。
+        外に出すと保存場所の構造が分かってしまうため、返す列を明示的に選んでいる。
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT source_id, file_name, file_type, scope, owner_user_id, uploaded_at
+        FROM sources
+        WHERE scope = 'individual' AND owner_user_id = ?
+        ORDER BY uploaded_at DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    conn.close()
+
     return [dict(row) for row in rows]
 
 
