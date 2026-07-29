@@ -758,7 +758,8 @@ body {
     </div>
   </div>
   <div class="chat-input-area">
-    <input type="text" class="chat-input" id="chat-input" placeholder="メッセージを入力..." onkeydown="if(event.key==='Enter')sendMessage()">
+    <!-- Enterの判定は chat.js の handleChatInputKeydown が行う（日本語入力の変換確定Enterでは送信しない） -->
+    <input type="text" class="chat-input" id="chat-input" placeholder="メッセージを入力..." onkeydown="handleChatInputKeydown(event)">
     <button class="chat-send" onclick="sendMessage()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
     </button>
@@ -927,7 +928,8 @@ body {
     <!-- 吹き出しは admin.js の openAiChat / sendAiChat が埋める（初期状態は空） -->
     <div class="modal-body" id="ai-chat-body"></div>
     <div class="ai-chat-input-area">
-      <input type="text" id="ai-chat-input" placeholder="例: 直近の評価はどうだった？" onkeydown="if(event.key==='Enter')sendAiChat()">
+      <!-- Enterの判定は admin.js の handleAiChatInputKeydown が行う（変換確定Enterでは送信しない） -->
+      <input type="text" id="ai-chat-input" placeholder="例: 直近の評価はどうだった？" onkeydown="handleAiChatInputKeydown(event)">
       <button id="ai-chat-send" onclick="sendAiChat()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>

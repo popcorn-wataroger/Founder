@@ -823,6 +823,21 @@ async function ensureStaffChatSession() {
 }
 
 /**
+ * モーダルの入力欄のキー操作を受け取り、確定したEnterのときだけ送信する。
+ *
+ * 入力: event … input の keydown イベント
+ * 出力: なし（条件を満たせば sendAiChat を呼ぶ）
+ *
+ * 中身は chat.js の handleChatInputKeydown と同じ考え方（日本語入力の変換確定Enterを
+ * 送信と区別する）。呼ぶ送信関数が違うだけなので、それぞれの画面の関数として分けている。
+ */
+function handleAiChatInputKeydown(event) {
+  if (event.key !== "Enter") return;
+  if (event.isComposing) return;
+  sendAiChat();
+}
+
+/**
  * 質問を送り、AIの回答をストリーミング表示する。
  *
  * 入力: なし（#ai-chat-input の値と currentStaffUserId を読む）
