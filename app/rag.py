@@ -154,12 +154,18 @@ def answer_question(question: str, role: str) -> tuple[str, list[str]]:
     return response.text, referenced_sources
 
 
-def answer_question_stream(question: str, role: str) -> tuple[list[str], Iterator[str]]:
+def answer_question_stream(
+    question: str,
+    role: str,
+    target_user_id: str | None = None,
+) -> tuple[list[str], Iterator[str]]:
     """質問を受け取り、参照ソースIDと「回答を少しずつ生み出す入れ物」を返す（ストリーミング版）。
 
     入力:
-        question … ユーザーからの質問テキスト
-        role     … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
+        question       … ユーザーからの質問テキスト
+        role           … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
+        target_user_id … 社員データ画面から「この社員について」質問する場合の対象社員の user_id。
+                         省略時（None）は従来どおり、role だけで検索範囲が決まる
 
     出力:
         (参照した source_id のリスト, 回答テキストの断片を順に取り出せるイテレータ)
@@ -174,11 +180,17 @@ def answer_question_stream(question: str, role: str) -> tuple[list[str], Iterato
         画面に「文字が少しずつ出てくる」表示ができるようになり、体感の待ち時間が減る。
 
     処理:
-        1. vector_store.search に role を渡し、権限に応じた範囲で関連チャンクを取得
+        1. vector_store.search に role と target_user_id を渡し、
+           権限に応じた範囲で関連チャンクを取得
         2. 関連チャンクが0件なら、定型メッセージを1回だけ流して終わる（生成はしない）
         3. ヒットしたチャンクから参照ソースIDを重複を除いて集める
         4. 関連チャンクと質問からプロンプトを組み立てる
         5. Gemini のストリーミング生成を回し、断片が届くたびに1つずつ渡す
+
+    なぜ target_user_id をここで受けるだけで、そのまま search に渡すか:
+        「誰の資料を見てよいか」の判断は vector_store.search が一手に引き受けている。
+        この関数が独自に絞り込みを足すと、権限のルールが2か所に散らばって
+        片方だけ直され、抜けが生まれる。ここは受け渡しに徹する。
 
     なぜ (ソースID, イテレータ) のタプルで返すか:
         SSEでは「参照ソースは最初に1回」「本文は断片を連続で」送りたい。
@@ -187,7 +199,8 @@ def answer_question_stream(question: str, role: str) -> tuple[list[str], Iterato
         送信順（sources → token → done）を自由に組み立てられる。
     """
     # 1. 質問に意味が近い社内文書のチャンクを、権限に応じた範囲から検索する
-    hits = search(question, role=role, top_k=TOP_K)
+    #    target_user_id を渡した場合は「共通 ＋ その社員の個別」だけが対象になる
+    hits = search(question, role=role, top_k=TOP_K, target_user_id=target_user_id)
 
     # 2. 関連する文書が1件も無ければ、生成せず定型文を1回だけ流して終わる
     #    参照ソースも無いので空リストを返す

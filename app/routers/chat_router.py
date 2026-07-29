@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Callable, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -14,6 +15,7 @@ from app.chat_history import (
 )
 from app.rag import answer_question, answer_question_stream
 from app.routers.auth_router import require_admin, verify_token
+from app.users import get_user_by_id
 
 # チャット関連のAPIをまとめるルーター。URLは /api/chat から始まる
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -42,6 +44,22 @@ class ChatRequest(BaseModel):
     session_id: int | None = None
 
 
+class StaffInquiryRequest(BaseModel):
+    """社員別チャットAPIが受け取るリクエストボディ。
+
+    question       … 社長からの質問文（必須）
+    target_user_id … 「誰について」の質問か。この社員の個別ソースだけが参照対象になる（必須）
+    session_id     … どの会話の続きか（任意）。省略すると新しいセッションを自動で作る
+
+    question という名前にしている理由:
+        既存の ChatRequest と揃えるため。フロント側も同じキーで送れる。
+    """
+
+    question: str
+    target_user_id: str
+    session_id: int | None = None
+
+
 class SessionRequest(BaseModel):
     """セッション作成APIが受け取るリクエストボディ。
 
@@ -51,12 +69,19 @@ class SessionRequest(BaseModel):
     context_type: str = "general"
 
 
-def _resolve_session(requested_session_id: int | None, user_id: str) -> int | None:
-    """会話をどのセッションに記録するかを決める（POST /api/chat と /api/chat/stream で共用）。
+def _resolve_session(
+    requested_session_id: int | None,
+    user_id: str,
+    context_type: str = "general",
+) -> int | None:
+    """会話をどのセッションに記録するかを決める（チャット系のPOST APIで共用）。
 
     入力:
         requested_session_id … リクエストで指定された session_id（未指定なら None）
         user_id              … トークンから取り出した、質問した本人の user_id
+        context_type         … 新しく作る場合の会話の種類。
+                               'general'（通常チャット）か 'staff_inquiry'（社員別チャット）。
+                               既存セッションの続きを指定された場合は使わない
 
     出力:
         記録先の session_id。セッションを用意できなかった場合のみ None
@@ -92,7 +117,7 @@ def _resolve_session(requested_session_id: int | None, user_id: str) -> int | No
     # 指定が無ければ、新しいセッションを自動で作る（既存動作の維持）
     # 失敗しても回答は返したいので、例外は握って None を返す（履歴が残らないだけ）
     try:
-        return create_session(user_id=user_id)
+        return create_session(user_id=user_id, context_type=context_type)
     except Exception:
         logger.exception("チャットセッションの作成に失敗しました（回答の生成は続行します）")
         return None
@@ -185,6 +210,77 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _build_event_stream(
+    question: str,
+    session_id: int | None,
+    referenced_sources: list[str],
+    chunk_iterator: Iterator[str],
+) -> Callable[[], Iterator[str]]:
+    """SSEでイベントを送り出し、完走したときだけ履歴を保存する関数を組み立てて返す。
+
+    入力:
+        question           … 保存する質問文（既に空チェック済みのもの）
+        session_id         … 記録先のセッションID。用意できなかった場合は None（保存しない）
+        referenced_sources … 回答の根拠になった source_id のリスト（検索済みで確定している）
+        chunk_iterator     … 回答本文の断片を順に取り出せる入れ物（回した瞬間に生成が走る）
+
+    出力:
+        StreamingResponse に渡すための関数。呼ぶとSSEの文字列を順に yield する
+
+    送るイベントの順番:
+        1. event: sources … 参照した source_id のリスト（最初に1回）
+        2. event: token   … 回答本文の断片（生成されるたびに連続で何度も）
+        3. event: done    … 生成完了の合図（最後に1回）
+        ※ 途中でエラーが起きた場合は event: error を流して終わる
+
+    履歴保存について（完走時のみ保存）:
+        本文を最後まで送り終えたときだけ、質問と回答をDBに記録する。
+        途中でユーザーがブラウザを閉じたり、生成がエラーで止まった場合は保存しない。
+        中途半端な回答が「AIの回答」として履歴に残ると、後から読んだ社長が
+        誤った内容を正しい回答だと受け取ってしまうため、記録しない方を選んでいる。
+
+    なぜ関数として切り出したか:
+        通常チャット（/api/chat/stream）と社員別チャット（/api/chat/staff-inquiry）で、
+        送信順も保存の作法もまったく同じだから。片方だけ直して挙動がずれるのを防ぐ。
+        違うのは「何を検索対象にするか」だけで、それは呼び出し元が
+        answer_question_stream に渡す引数で決まる。
+    """
+
+    def event_stream() -> Iterator[str]:
+        # 送信済みの本文を貯めていく入れ物（最後に履歴として保存するため）
+        collected: list[str] = []
+
+        try:
+            # 1. 最初に「どの資料を参照したか」を1回送る
+            yield _sse_event("sources", {"referenced_sources": referenced_sources})
+
+            # 2. 本文の断片が届くたびに、1つずつ送る（ここが「少しずつ出てくる」部分）
+            for chunk in chunk_iterator:
+                collected.append(chunk)
+                yield _sse_event("token", {"text": chunk})
+
+            # 3. 最後まで届いたので、完了の合図を送る
+            yield _sse_event("done", {})
+
+        except Exception:
+            # 生成の途中でエラーが起きた場合。履歴は保存せず、エラーを伝えて終わる
+            # （途中までの回答を「AIの回答」として残さないため）
+            logger.exception("ストリーミング生成中にエラーが発生しました")
+            yield _sse_event("error", {"message": "回答の生成中にエラーが発生しました"})
+            return
+
+        # 4. ここに到達＝最後まで送り切った（完走した）場合のみ、履歴を保存する
+        #    途中でブラウザを閉じられた場合、この行には到達しない（＝保存されない）
+        if session_id is not None:
+            try:
+                add_message(session_id, "user", question)
+                add_message(session_id, "assistant", "".join(collected))
+            except Exception:
+                logger.exception("チャット履歴の保存に失敗しました（回答は送信済み）")
+
+    return event_stream
+
+
 @router.post("/stream")
 async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
     """質問を受け取り、AIの回答を「生成された端から少しずつ」流して返す（SSE版）。
@@ -206,10 +302,7 @@ async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
         既存の /api/chat はそのまま残してあるので、フロントは好きな方を使える。
 
     履歴保存について（B案・完走時のみ保存）:
-        本文を最後まで送り終えたときだけ、質問と回答をDBに記録する。
-        途中でユーザーがブラウザを閉じたり、生成がエラーで止まった場合は保存しない。
-        中途半端な回答が「AIの回答」として履歴に残ると、後から読んだ社長が
-        誤った内容を正しい回答だと受け取ってしまうため、記録しない方を選んでいる。
+        送信と保存の作法は _build_event_stream にまとめてある（詳細はそちら）。
 
     権限について:
         検索範囲の絞り込み（社員は共通ソースのみ）も、
@@ -232,38 +325,75 @@ async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
     #    この時点ではまだ生成は始まっていない（for で回した瞬間に生成が走る）
     referenced_sources, chunk_iterator = answer_question_stream(question, role=role)
 
-    def event_stream():
-        """SSEのイベントを順に送り出す。送り終わったら履歴を保存する。"""
-        # 送信済みの本文を貯めていく入れ物（最後に履歴として保存するため）
-        collected: list[str] = []
+    # 5. SSEの送信と履歴保存をまとめた関数を組み立てて、ストリーミング応答として返す
+    event_stream = _build_event_stream(question, session_id, referenced_sources, chunk_iterator)
 
-        try:
-            # 4-a. 最初に「どの資料を参照したか」を1回送る
-            yield _sse_event("sources", {"referenced_sources": referenced_sources})
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-            # 4-b. 本文の断片が届くたびに、1つずつ送る（ここが「少しずつ出てくる」部分）
-            for chunk in chunk_iterator:
-                collected.append(chunk)
-                yield _sse_event("token", {"text": chunk})
 
-            # 4-c. 最後まで届いたので、完了の合図を送る
-            yield _sse_event("done", {})
+@router.post("/staff-inquiry")
+async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(require_admin)):
+    """「この社員について」の質問に、共通＋その社員の個別ソースを参照して答える（社長専用・SSE）。
 
-        except Exception:
-            # 生成の途中でエラーが起きた場合。履歴は保存せず、エラーを伝えて終わる
-            # （途中までの回答を「AIの回答」として残さないため）
-            logger.exception("ストリーミング生成中にエラーが発生しました")
-            yield _sse_event("error", {"message": "回答の生成中にエラーが発生しました"})
-            return
+    入力:
+        req   … StaffInquiryRequest（question / target_user_id / 任意の session_id）
+        token … require_admin が返すログイン情報（社長でなければ403で弾かれている）
 
-        # 5. ここに到達＝最後まで送り切った（完走した）場合のみ、履歴を保存する
-        #    途中でブラウザを閉じられた場合、この行には到達しない（＝保存されない）
-        if session_id is not None:
-            try:
-                add_message(session_id, "user", question)
-                add_message(session_id, "assistant", "".join(collected))
-            except Exception:
-                logger.exception("チャット履歴の保存に失敗しました（回答は送信済み）")
+    出力:
+        text/event-stream 形式のストリーム。イベントの順番は /api/chat/stream と同じ
+        （sources → token を連続 → done。途中で失敗した場合は error）
+
+    処理:
+        1. 質問が空でないか確認する（空なら400）
+        2. target_user_id の社員が実在するか確認する（居なければ404）
+        3. 記録先のセッションを決める（無ければ context_type='staff_inquiry' で新規作成）
+        4. 共通＋その社員の個別ソースだけを対象に、回答をストリーミング生成する
+        5. SSEで流し、完走したときだけ履歴に保存する
+
+    /api/chat/stream との違い:
+        検索対象が違う。通常の社長チャットは全ソースが対象なので、
+        「奥村さんについて」と聞いても別の社員の評価資料が根拠に混ざりうる。
+        こちらは target_user_id を search まで渡し、
+        「共通」と「その社員の個別」以外を検索の時点で除外する。
+
+    セッションの持ち主について（重要）:
+        セッションの持ち主は必ずトークンの user_id（＝質問した社長）にする。
+        target_user_id を持ち主にしてしまうと、社長の質問がその社員自身の
+        チャット履歴として記録され、社員データ画面の「最近のトーク」に
+        本人が話していない会話が並ぶことになる。
+        「誰について聞いたか」は context_type='staff_inquiry' の側で区別する。
+
+    存在しない社員を404にする理由:
+        黙って通すと、対象の個別ソースが1件も無いまま共通ソースだけで回答が作られる。
+        社長には普通の回答に見えてしまい、user_id の間違いに気づけない。
+        GET /api/admin/users/{user_id}（PR #53）と同じく、
+        管理者本人のIDも「スタッフ一覧に出ない人」として404で揃える。
+    """
+    # 1. 前後の空白を除いて、質問が実質空でないか確認する
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="質問を入力してください")
+
+    # 2. 対象の社員が実在するかを確認する（存在しないIDや管理者自身は404）
+    target_user = get_user_by_id(req.target_user_id)
+    if target_user is None or target_user["role"] == "admin":
+        raise HTTPException(status_code=404, detail="社員が見つかりません")
+
+    # 3. どのセッションに記録するかを決める（持ち主は必ずトークンの user_id ＝ 社長）
+    #    新規作成時は context_type='staff_inquiry' にして、通常チャットと区別できるようにする
+    user_id = token["user_id"]
+    session_id = _resolve_session(req.session_id, user_id, context_type="staff_inquiry")
+
+    # 4. 対象社員を指定して検索・生成する。
+    #    ここで target_user_id を渡すことが、他の社員の個別ソースを除外する唯一の指示になる
+    referenced_sources, chunk_iterator = answer_question_stream(
+        question,
+        role=token["role"],
+        target_user_id=req.target_user_id,
+    )
+
+    # 5. 送信と履歴保存の作法は通常チャットと共通（_build_event_stream にまとめてある）
+    event_stream = _build_event_stream(question, session_id, referenced_sources, chunk_iterator)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
