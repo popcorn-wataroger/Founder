@@ -699,7 +699,8 @@ async function uploadStaffSource(file) {
     //   先にパースを切り離しておけば、下の判定で「アップロードに失敗しました」を出せる。
     let data = {};
     try {
-      data = await res.json();
+      const parsed = await res.json();
+      data = parsed && typeof parsed === "object" ? parsed : {};
     } catch (e) {
       data = {};
     }
