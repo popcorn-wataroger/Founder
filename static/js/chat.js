@@ -436,6 +436,28 @@ async function ensureSession() {
 }
 
 /**
+ * 入力欄のキー操作を受け取り、確定したEnterのときだけ送信する。
+ *
+ * 入力: event … input の keydown イベント
+ * 出力: なし（条件を満たせば sendMessage を呼ぶ）
+ *
+ * event.isComposing を除外する理由（重要）:
+ *   日本語入力では「へんかん」→ 変換候補から選ぶ → Enter で確定、という操作をする。
+ *   このEnterはあくまで変換を確定するためのもので、送信の意思ではない。
+ *   除外しないと、変換を確定した瞬間に書きかけの文が送信されてしまう。
+ *   isComposing は「いま文字を変換中か」を表すフラグで、変換確定のEnterでは true になる。
+ *
+ * index.html のインラインに書かず、この関数に寄せている理由:
+ *   条件が増えるとインラインでは読みづらく、社員チャットと社員別チャットで
+ *   片方だけ直して挙動がずれる。判定はJS側の1か所にまとめる。
+ */
+function handleChatInputKeydown(event) {
+  if (event.key !== "Enter") return;
+  if (event.isComposing) return;
+  sendMessage();
+}
+
+/**
  * メッセージを送信し、AIの回答をストリーミング表示する。
  *
  * 入力:  なし（#chat-input の値を読む）

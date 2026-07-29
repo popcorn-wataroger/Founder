@@ -758,7 +758,8 @@ body {
     </div>
   </div>
   <div class="chat-input-area">
-    <input type="text" class="chat-input" id="chat-input" placeholder="メッセージを入力..." onkeydown="if(event.key==='Enter')sendMessage()">
+    <!-- Enterの判定は chat.js の handleChatInputKeydown が行う（日本語入力の変換確定Enterでは送信しない） -->
+    <input type="text" class="chat-input" id="chat-input" placeholder="メッセージを入力..." onkeydown="handleChatInputKeydown(event)">
     <button class="chat-send" onclick="sendMessage()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
     </button>
@@ -912,21 +913,24 @@ body {
 </div>
 
 <!-- ===== AI CHAT MODAL ===== -->
-<div id="modal-aichat" class="modal-overlay ai-chat-modal" onclick="if(event.target===this)closeModal('modal-aichat')">
+<!-- 閉じる操作は closeModal ではなく closeAiChat を呼ぶ。
+     モーダルを閉じたら会話を終了させる（セッションを破棄する）必要があるため -->
+<div id="modal-aichat" class="modal-overlay ai-chat-modal" onclick="if(event.target===this)closeAiChat()">
   <div class="modal">
     <div class="modal-header">
       <h3 style="display:flex;align-items:center;gap:8px;">
-        <span style="width:24px;height:24px;background:var(--teal);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600;">奥</span>
-        奥村 仁哉 について質問
+        <!-- アバターの文字と見出しは admin.js の openAiChat が対象社員に合わせて埋める -->
+        <span id="modal-aichat-avatar" style="width:24px;height:24px;background:var(--teal);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600;"></span>
+        <span id="modal-aichat-title">このスタッフについてチャット</span>
       </h3>
-      <button class="modal-close" onclick="closeModal('modal-aichat')">×</button>
+      <button class="modal-close" onclick="closeAiChat()">×</button>
     </div>
-    <div class="modal-body" id="ai-chat-body">
-      <div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">奥村さんに関する情報（評価資料、個別ソース）と共通ナレッジの両方を参照してお答えします。何を知りたいですか？</div></div>
-    </div>
+    <!-- 吹き出しは admin.js の openAiChat / sendAiChat が埋める（初期状態は空） -->
+    <div class="modal-body" id="ai-chat-body"></div>
     <div class="ai-chat-input-area">
-      <input type="text" id="ai-chat-input" placeholder="例: 直近の評価はどうだった？" onkeydown="if(event.key==='Enter')sendAiChat()">
-      <button onclick="sendAiChat()">
+      <!-- Enterの判定は admin.js の handleAiChatInputKeydown が行う（変換確定Enterでは送信しない） -->
+      <input type="text" id="ai-chat-input" placeholder="例: 直近の評価はどうだった？" onkeydown="handleAiChatInputKeydown(event)">
+      <button id="ai-chat-send" onclick="sendAiChat()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
     </div>
@@ -969,22 +973,13 @@ function showAdminTab(tab) {
 
 // showStaffDetail(userId) は admin.js にある（APIから実データを取得して描画する）
 
-function sendAiChat() {
-  const input = document.getElementById('ai-chat-input');
-  const text = input.value.trim();
-  if (!text) return;
-  const container = document.getElementById('ai-chat-body');
-  container.innerHTML += '<div class="msg user"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;background:var(--accent-light);color:var(--accent);">社</div><div class="msg-bubble" style="font-size:13px;">' + text + '</div></div>';
-  input.value = '';
-  container.scrollTop = container.scrollHeight;
-  setTimeout(() => {
-    container.innerHTML += '<div class="msg ai"><div class="msg-avatar" style="width:28px;height:28px;font-size:10px;">F</div><div class="msg-bubble" style="font-size:13px;">Q1評価レポートによると、奥村さんの営業成績は目標達成率112%で、チーム内トップの実績でした。特に新規顧客開拓で高い評価を受けています。</div></div>';
-    container.scrollTop = container.scrollHeight;
-  }, 800);
-}
-
 // openChatLog(sessionId) は admin.js にある（セッションのメッセージを取得して表示する）
-function openAiChat() { document.getElementById('modal-aichat').classList.add('active'); }
+// openAiChat() / sendAiChat() / closeAiChat() も admin.js にある
+//   （POST /api/chat/staff-inquiry を叩き、回答をストリーミング表示する）
+
+// モーダルを閉じる共通処理。トーク全文モーダルなど複数の画面から呼ばれる。
+// AIチャットモーダルは閉じるときに会話も終了させる必要があるため、
+// この関数ではなく admin.js の closeAiChat を使う
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 </script>
 </body>

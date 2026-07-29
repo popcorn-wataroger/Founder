@@ -1,7 +1,7 @@
 """チャット履歴のDB操作をまとめたモジュール。
 
 書き込み系（create_session / add_message）と、
-取得系（get_messages / get_sessions / get_session_owner）をまとめている。
+取得系（get_messages / get_sessions / get_session / get_session_owner）をまとめている。
 
 DB操作の流儀は既存コード（sources_router.py 等）に合わせている:
     get_connection() で接続 → execute（?プレースホルダ）→ commit → close
@@ -98,6 +98,37 @@ def add_message(session_id: int, role: str, content: str) -> int:
     return message_id
 
 
+def get_session(session_id: int) -> dict | None:
+    """指定セッションの持ち主と会話の種類を返す。存在しなければ None。
+
+    入力:
+        session_id … 調べたいセッションのID
+
+    出力:
+        {"user_id": 持ち主, "context_type": 会話の種類} の辞書。
+        該当セッションが無ければ None
+
+    何のための関数か:
+        「そのセッションに書き込んでよいか」の判定には、持ち主だけでなく
+        会話の種類（general / staff_inquiry）も必要になる。
+        通常チャットのセッションに社員別チャットの発言を混ぜられると、
+        1つの会話の中で参照範囲の違う発言が並んでしまうため、
+        呼び出し元（_resolve_session）が両方を突き合わせて判定する。
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT user_id, context_type FROM chat_sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    conn.close()
+
+    # 該当セッションが無ければ None を返す（呼び出し元で404にする）
+    if row is None:
+        return None
+
+    return dict(row)
+
+
 def get_session_owner(session_id: int) -> str | None:
     """指定セッションの持ち主（user_id）を返す。存在しなければ None。
 
@@ -113,19 +144,19 @@ def get_session_owner(session_id: int) -> str | None:
         他人のIDを推測して叩くことは簡単にできてしまう。
         メッセージを返す前に、この関数で持ち主を確認し、
         本人（または社長）でなければ拒否する必要がある。
+
+    get_session との使い分け:
+        持ち主だけ分かればよい呼び出し元のための薄い入口。
+        SQLを二重に持たないよう、中身は get_session に任せている。
     """
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT user_id FROM chat_sessions WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    conn.close()
+    session = get_session(session_id)
 
     # 該当セッションが無ければ None を返す（呼び出し元で404にする）
-    if row is None:
+    if session is None:
         return None
 
-    return row["user_id"]
+    owner_user_id: str = session["user_id"]
+    return owner_user_id
 
 
 def get_messages(session_id: int) -> list[dict]:
