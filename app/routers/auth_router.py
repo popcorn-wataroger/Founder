@@ -72,6 +72,23 @@ class LoginRequest(BaseModel):
 async def login(req: LoginRequest):
     """ログインAPIエンドポイント
 
+    入力:
+        req … リクエストボディ（LoginRequest）
+            employee_code … 社員コード（例: EMP001 / ADMIN）
+            password      … パスワード
+
+    出力:
+        いずれの場合もHTTPステータスは200で、辞書の success で成否を表す。
+
+        成功時: {"success": True, "role": ロール（employee/admin）,
+                 "name": 氏名, "token": JWTアクセストークン}
+        失敗時: {"success": False, "message": 画面に出すエラーメッセージ}
+
+        失敗時に token や role を返さないのは、認証できていない相手に
+        ロールなどの情報を渡さないため。
+        message は「社員コードまたはパスワードが正しくありません」で統一しており、
+        どちらが間違っているかは伝えない（存在する社員コードを推測されないため）。
+
     処理:
         1. 入力チェック → 社員コードでユーザーを探す → パスワード照合
         2. 認証に成功した場合だけ、最終ログイン日時を user_logins に記録する

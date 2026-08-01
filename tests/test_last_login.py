@@ -11,18 +11,22 @@
     4. 日時の形式が既存（chat_sessions.started_at 等）と揃っていること
        ＝ UTC・ISO形式・オフセット付き。ここがズレると画面の表示時刻が9時間ずれる
     5. 記録が無い社員は空文字が返り、画面が「未記録」と表示できること
+    6. ログインしても data/users.csv が書き換わらないこと
+       ＝ 記録先をDBに分けた理由そのもの。CSVはGit管理下なので変わると差分が出る
 """
 
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app import database, user_logins
 from app.main import app
 from app.routers.auth_router import require_admin
+from app.users import USERS_CSV_PATH
 
 
 @pytest.fixture
@@ -45,7 +49,7 @@ def client(temp_db: None) -> Iterator[TestClient]:
     app.dependency_overrides.clear()
 
 
-def _login(client: TestClient, employee_code: str, password: str = "password"):
+def _login(client: TestClient, employee_code: str, password: str = "password") -> httpx.Response:
     """ログインAPIを叩く（テスト用の短縮形）。"""
     return client.post(
         "/api/login",
@@ -111,6 +115,26 @@ def test_同じ社員が2回ログインすると1行のまま上書きされる
 
     assert list(logins.keys()) == ["2"]  # 行は1つのまま
     assert logins["2"] >= first  # 日時は同じか新しい（ISO形式なので文字列比較で順序が保てる）
+
+
+def test_ログインしてもusers_csvは1バイトも変わらない(client: TestClient) -> None:
+    """Issue #54 の完了条件。社員マスタCSVは読み取り専用のままであること。
+
+    なぜバイト列で比べるか:
+        「差分が出ない」を人の目で確認するのではなく、テストで固定するため。
+        将来うっかりCSVへ書き戻す実装に戻したり、CSVを読むついでに
+        書き直すようなコードが入ったりすると、ここで落ちる。
+
+    data/users.csv はGit管理下にあるため、ログインのたびに中身が変わると
+    `git status` に差分が出続け、コミットのたびにノイズになる。
+    """
+    before = USERS_CSV_PATH.read_bytes()
+
+    _login(client, "EMP001")
+    _login(client, "EMP002")
+    _login(client, "EMP001", "wrong-password")
+
+    assert USERS_CSV_PATH.read_bytes() == before
 
 
 @pytest.mark.parametrize(
