@@ -48,5 +48,13 @@ def init_db() -> None:
             FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id)
         )
     """)
+    # 最終ログイン日時。社員マスタ（data/users.csv）はGit管理下で読み取り専用のため、
+    # ログインのたびに変わる値だけをこちらに持つ（1社員1行）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_logins (
+            user_id       TEXT PRIMARY KEY,
+            last_login_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()

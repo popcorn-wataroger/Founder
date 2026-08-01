@@ -56,8 +56,12 @@ def _insert_source(file_name: str, scope: str, owner_user_id: str | None, upload
     conn.close()
 
 
-def test_社員の基本情報が返る(client: TestClient) -> None:
-    """EMP001（user_id=2）の基本情報が、想定どおりの項目で返る。"""
+def test_社員の基本情報が返る(client: TestClient, temp_db: None) -> None:
+    """EMP001（user_id=2）の基本情報が、想定どおりの項目で返る。
+
+    最終ログインを user_logins テーブルから読むようになったため、
+    このテストも本番DBを触らないよう temp_db を使う。
+    """
     response = client.get("/api/admin/users/2")
 
     assert response.status_code == 200, response.text
@@ -79,7 +83,7 @@ def test_社員の基本情報が返る(client: TestClient) -> None:
     }
 
 
-def test_パスワードとroleは返さない(client: TestClient) -> None:
+def test_パスワードとroleは返さない(client: TestClient, temp_db: None) -> None:
     """CSVに password 列があるので、レスポンスに漏れていないことを固定する。"""
     response = client.get("/api/admin/users/2")
 

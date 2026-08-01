@@ -6,6 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app import config
+from app.user_logins import record_login
 from app.users import get_user_by_employee_code
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -69,7 +70,19 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 async def login(req: LoginRequest):
-    """ログインAPIエンドポイント"""
+    """ログインAPIエンドポイント
+
+    処理:
+        1. 入力チェック → 社員コードでユーザーを探す → パスワード照合
+        2. 認証に成功した場合だけ、最終ログイン日時を user_logins に記録する
+        3. JWTアクセストークンを返す
+
+    最終ログインを「成功時だけ」記録する理由:
+        失敗も記録すると、パスワードを間違えただけの試行や、
+        存在しない社員コードでの試行まで「最終ログイン」に見えてしまうため。
+        社員データ画面が知りたいのは「最後に入れたのはいつか」なので、
+        トークンを発行する直前に1回だけ記録する。
+    """
     if not req.employee_code or not req.password:
         return {"success": False, "message": "社員コードとパスワードを入力してください"}
 
@@ -80,6 +93,11 @@ async def login(req: LoginRequest):
 
     if user["password"] != req.password:
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
+
+    # 認証に成功したので、この社員の最終ログイン日時を更新する。
+    # user_id はログインしてきた側に由来する値なので、
+    # record_login の中で ? プレースホルダにバインドしている（SQL文へ埋め込まない）
+    record_login(user["user_id"])
 
     token = create_access_token(user_id=user["user_id"], role=user["role"])
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app.database import init_db
 from app.routers import auth_router, chat_router, sources_router
 from app.routers.auth_router import require_admin
+from app.user_logins import get_last_login_at
 from app.users import get_user_by_id, users
 
 
@@ -86,7 +87,15 @@ async def get_admin_user_detail(
     処理:
         1. user_id で社員を1件探す。見つからなければ404
         2. role が admin なら404（下記の理由）
-        3. 画面に出す項目だけを1つずつ書き出して返す
+        3. 最終ログイン日時を user_logins テーブルから取り出す
+        4. 画面に出す項目だけを1つずつ書き出して返す
+
+    なぜ最終ログインだけCSVではなくDBから読むか:
+        users.csv の last_login_at 列は全員空のまま使っていない。
+        ログインのたびに変わる値をGit管理下のCSVに書き戻すと差分が出るため、
+        記録先を user_logins テーブルに分けている（app/user_logins.py 参照）。
+        まだ一度もログインしていない社員は記録が無いので空文字を返し、
+        画面側（static/js/admin.js の formatLastLogin）が「未記録」と表示する。
 
     なぜ dict(user) をそのまま返さないか（重要）:
         users.csv には password 列がある。user をそのまま返すと
@@ -105,6 +114,9 @@ async def get_admin_user_detail(
     if user is None or user["role"] == "admin":
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
+    # 最終ログインはCSVではなくDBが持つ。記録が無ければ空文字（画面は「未記録」表示）
+    last_login_at = get_last_login_at(user_id) or ""
+
     # 画面に出す項目だけを明示的に書き出す（password と role は返さない）
     return {
         "user_id": user["user_id"],
@@ -116,7 +128,7 @@ async def get_admin_user_detail(
         "family": user["family"],
         "hire_date": user["hire_date"],
         "employment_type": user["employment_type"],
-        "last_login_at": user["last_login_at"],
+        "last_login_at": last_login_at,
     }
 
 
