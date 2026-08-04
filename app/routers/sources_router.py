@@ -1,15 +1,18 @@
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.config import UPLOAD_DIR
 from app.database import get_connection
 from app.routers.auth_router import require_admin
+from app.upload_paths import build_safe_upload_path
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
 from app.vectorizer import embed_text, extract_text, split_into_chunks
 
@@ -33,6 +36,19 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
 #     静的解析から見て「ユーザー入力がパスまで届いている」状態が続いてしまうため、
 #     値そのものを定数に置き換えて汚染を断ち切る。
 EXTENSION_BY_TYPE = {"pdf": ".pdf", "docx": ".docx", "pptx": ".pptx", "txt": ".txt"}
+
+# ダウンロード時に返す Content-Type。表示名（file_name）からの推測ではなく
+# ソース種別の定数表から引く。表示名に拡張子が無くても正しい種別で返せる
+MEDIA_TYPE_BY_TYPE = {
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "txt": "text/plain; charset=utf-8",
+}
+
+# ダウンロード時の表示名から取り除く制御文字（改行・タブ・NUL など）。
+# ヘッダに載せる文字列を1行に閉じ込めるために使う
+_CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 
 
 @router.get("")
@@ -408,6 +424,126 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
         "url": req.url,
         "chunk_count": chunk_count,
     }
+
+
+def _safe_download_name(raw_name: object, fallback: str) -> str:
+    """ダウンロード時にブラウザへ提示する表示名を、安全な形に整えて返す。
+
+    入力:
+        raw_name … DBの file_name（アップロード時の元のファイル名＝完全なユーザー入力）
+        fallback … raw_name が使い物にならなかったときに使う代替名（ディスク上の安全な名前）
+
+    出力:
+        Content-Disposition ヘッダに載せてよい表示名
+
+    なぜ必要か（ヘッダインジェクション対策）:
+        file_name はクライアントが自由に決められる文字列で、DBにそのまま入っている。
+        これをヘッダに載せる際、改行が混ざるとヘッダを分割して別のヘッダを
+        差し込まれる恐れがある。
+
+        Starlette の FileResponse は filename を urllib.parse.quote に通し、
+        エンコード結果が元と変わる場合は RFC5987 形式（filename*=utf-8''...）に
+        切り替える。改行・ダブルクォート・非ASCIIはすべてパーセントエンコードされるため、
+        ヘッダインジェクション自体はライブラリ側で防がれている（確認済み）。
+
+        ただし '/' は quote の既定で素通りするため、'a/b.pdf' のような値は
+        filename="a/b.pdf" とディレクトリ区切りを含んだまま提示されてしまう。
+        表示名として不適切なので、ここで区切り文字と制御文字を落としておく。
+        ライブラリの実装に安全性を全面的に預けない、という意味の多層防御でもある。
+
+    注意:
+        この関数が返すのは「見せる名前」だけで、実際に読むファイルのパスとは無関係。
+        パスは build_safe_upload_path が別に組み立てる。
+    """
+    # '/' と '\' の両方を区切りとみなし、最後の要素だけを表示名として使う
+    name = re.split(r"[/\\]", str(raw_name))[-1]
+
+    # 制御文字（改行・タブ・NUL など）を取り除く
+    name = _CONTROL_CHARS_PATTERN.sub("", name).strip()
+
+    # 空になった場合や '.' '..' だけになった場合は表示名として使えない
+    if not name or name in {".", ".."}:
+        return fallback
+
+    return name
+
+
+@router.get("/{source_id}/download")
+async def download_source(source_id: int, token: dict = Depends(require_admin)):
+    """登録済みソースの実ファイルをダウンロードさせる（社長専用）。
+
+    入力:
+        source_id … ダウンロードしたいソースのID（URLパスで指定）
+        token     … require_admin が返すログイン情報（社長でなければ403で弾かれている）
+
+    出力:
+        ファイルの中身（FileResponse）。ブラウザには元のファイル名で保存させる。
+
+    エラー:
+        403 … 社員がアクセスした場合（require_admin が投げる）
+        400 … URLソースを指定した場合（実ファイルが存在しないため）
+        404 … ソースが無い / 保存パスが想定形式でない / 実ファイルが見つからない
+
+    処理:
+        1. source_id でDBを引く（無ければ404）
+        2. URLソースを弾く
+        3. file_path から安全なパスを組み立て直す
+        4. 実ファイルの存在を確認する
+        5. FileResponse で返す
+
+    なぜURLソースを明示的に弾くのか:
+        URLソースの file_path には、社長が入力したURL文字列がそのまま入っている
+        （register_url を参照）。つまりこの列は「常にサーバー生成の安全な値」ではない。
+        file_type='url' の行を先に落とすことで、ユーザー入力そのものが
+        パス処理へ流れ込む経路を入口で断つ。
+
+    なぜ file_path をそのまま開かないのか（パストラバーサル対策）:
+        DBの値であっても信用しない。build_safe_upload_path に通し、
+        「コード側の定数 UPLOAD_DIR」と「正規表現を通ったファイル名」だけから
+        パスを作り直す。検証を通らない値（形式の違う古いデータなど）は
+        ValueError になるので、その場合は404として扱う。
+        なお delete_source は現状 file_path を直接 Path に渡しているが、
+        そちらの整理は本Issueの対象外（別Issueで扱う）。
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT file_name, file_type, file_path FROM sources WHERE source_id = ?",
+        (source_id,),
+    ).fetchone()
+    conn.close()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="ソースが見つかりません")
+
+    # URLソースには実ファイルが存在しない（file_path にはURL文字列が入っている）
+    if row["file_type"] == "url":
+        raise HTTPException(status_code=400, detail="URLソースはダウンロードできません")
+
+    # DBの値を信用せず、検証を通った要素だけからパスを組み立て直す
+    try:
+        safe_path = build_safe_upload_path(row["file_path"])
+    except ValueError:
+        # 保存名の生成規則に合わない＝形式の違う古いデータや壊れた行。
+        # 利用者から見れば「取り出せるファイルが無い」ので404で返す。
+        # リクエスト由来の値は、改行を落としてからログに渡す（ログインジェクション対策）
+        logger.warning(
+            "保存パスが想定の形式ではありません source_id=%s", _sanitize_for_log(source_id)
+        )
+        raise HTTPException(status_code=404, detail="ファイルが見つかりません")
+
+    # DBに行はあるが実ファイルが消えている場合（手動削除など）
+    if not safe_path.is_file():
+        raise HTTPException(status_code=404, detail="ファイルが見つかりません")
+
+    # ブラウザに提示する名前は元のファイル名。実際に読むパスは safe_path で、
+    # 「見せる名前」と「ディスク上の名前」は最後まで分離したままにする。
+    # media_type も file_name からの推測ではなく file_type の定数表から引く
+    # （表示名に拡張子が無い場合でも正しい種別で返すため）
+    return FileResponse(
+        path=safe_path,
+        media_type=MEDIA_TYPE_BY_TYPE.get(row["file_type"], "application/octet-stream"),
+        filename=_safe_download_name(row["file_name"], safe_path.name),
+    )
 
 
 @router.delete("/{source_id}")

@@ -504,7 +504,7 @@ async function loadStaffSources(userId) {
   }
 }
 
-// 個別ソースを1件ずつ行として描画する（ダウンロードボタンは今回スコープ外のため出さない）
+// 個別ソースを1件ずつ行として描画する（ファイルの行には「ダウンロード」ボタンを付ける）
 function renderStaffSources(sources) {
   const container = document.getElementById("detail-sources");
 
@@ -546,8 +546,93 @@ function renderStaffSources(sources) {
     info.appendChild(icon);
     info.appendChild(texts);
     item.appendChild(info);
+
+    // URLソースには実ファイルが無いので、ダウンロードボタン自体を出さない
+    // （APIも file_type='url' は400で弾く。押せてしまう見た目にしない方が親切）
+    if (source.file_type !== "url") {
+      const download = document.createElement("button");
+      download.className = "source-dl";
+      download.textContent = "ダウンロード";
+      // ボタン自身を渡すのは、押している間だけそのボタンを無効化するため
+      download.addEventListener("click", () => {
+        downloadStaffSource(source.source_id, source.file_name, download);
+      });
+      item.appendChild(download);
+    }
+
     container.appendChild(item);
   });
+}
+
+/**
+ * 個別ソースの実ファイルをダウンロードする。
+ *
+ * 入力:
+ *   sourceId … ダウンロードするソースのID
+ *   fileName … 保存時にブラウザへ提示するファイル名（一覧が持っている元のファイル名）
+ *   button   … 押されたボタン自身（処理中だけ無効化して二重送信を防ぐ）
+ * 出力: なし（成功するとブラウザのダウンロードが始まる）
+ *
+ * なぜ <a href="/api/..."> や window.open ではダメか:
+ *   このAPIは管理者専用で、認証はlocalStorageのトークンを
+ *   Authorizationヘッダに載せる方式（authHeaders）。
+ *   リンクや window.open ではヘッダを付けられないので403になる。
+ *   そのため fetch で取得し、受け取った中身をBlobにしてから
+ *   その場で作った <a> をクリックさせる、という手順を踏む。
+ *
+ * 保存名について:
+ *   サーバーは Content-Disposition に名前を載せているが、
+ *   Blob経由の場合ブラウザはそのヘッダを見ず a.download を使う。
+ *   そこで一覧が既に持っている file_name をそのまま渡している。
+ */
+async function downloadStaffSource(sourceId, fileName, button) {
+  // 連打対策。処理中のボタンからの再実行は受け付けない
+  if (button.disabled) return;
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = "取得中...";
+
+  // 作ったBlob URLは finally で必ず解放する（解放しないとタブを閉じるまでメモリに残る）
+  let objectUrl = null;
+
+  try {
+    const res = await fetch(`/api/sources/${encodeURIComponent(sourceId)}/download`, {
+      headers: authHeaders(),
+    });
+
+    if (!res.ok) {
+      // エラー時の中身はJSONとは限らない（502等は手前のプロキシがHTMLを返す）。
+      // パースの失敗は握りつぶし、下で決め打ちのメッセージを出す
+      let detail = "";
+      try {
+        const parsed = await res.json();
+        detail = parsed && typeof parsed === "object" ? parsed.detail : "";
+      } catch (e) {
+        detail = "";
+      }
+      throw new Error(detail || "ダウンロードに失敗しました");
+    }
+
+    const blob = await res.blob();
+    objectUrl = URL.createObjectURL(blob);
+
+    // 画面に出さない <a> を一時的に作り、クリックさせて保存ダイアログを出す
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    // file_name が空のときはブラウザ任せの名前になってしまうので代替名を使う
+    link.download = fileName && fileName.trim() ? fileName : "download";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    setStaffSourceStatus(`「${link.download}」をダウンロードしました`, "success");
+  } catch (e) {
+    setStaffSourceStatus(e.message, "error");
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
 }
 
 /**
