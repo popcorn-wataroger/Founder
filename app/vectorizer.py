@@ -5,9 +5,7 @@ embedding（ベクトル化）や Qdrant への保存は後続ステップで追
 """
 
 import ipaddress
-import re
 import socket
-from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -17,19 +15,15 @@ from google import genai
 from pptx import Presentation
 from pypdf import PdfReader
 
-from app.config import GEMINI_API_KEY, UPLOAD_DIR
+from app.config import GEMINI_API_KEY
+
+# 保存パスを安全に組み立て直す処理は app/upload_paths.py に集約している。
+# 本文抽出（このモジュール）とダウンロード（sources_router）の両方が
+# 同じ判定ルールを使うため、片方だけ穴が開くことを防ぐ。
+from app.upload_paths import build_safe_upload_path
 
 # URL取得時のタイムアウト秒数（応答が無いURLで固まらないための保険）
 URL_TIMEOUT = 10
-
-# アップロード時にサーバー側が組み立てる保存ファイル名の形式。
-# sources_router の save_name = f"{timestamp}_{uuid4}{拡張子}" に対応する
-#   timestamp … %Y%m%d%H%M%S%f の20桁
-#   uuid4     … 8-4-4-4-12 のハイフン付き36文字
-_SAFE_FILE_NAME_PATTERN = re.compile(
-    r"[0-9]{20}_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    r"\.(?:pdf|docx|pptx|txt)"
-)
 
 # チャンク分割の設定（Issue #19 の完了条件）
 CHUNK_SIZE = 500  # 1チャンクの最大文字数
@@ -69,62 +63,10 @@ def extract_text(path: str, file_type: str) -> str:
     raise ValueError(f"未対応のファイル形式です: {file_type}")
 
 
-def _sanitize_upload_name(raw_path: str) -> str:
-    """保存パス文字列からファイル名だけを取り出し、想定どおりの形式か検証して返す。
-
-    入力:
-        raw_path … DBに記録された保存パス文字列（信用しない値として扱う）
-
-    出力:
-        検証を通ったファイル名（ディレクトリ部分を含まない文字列）
-
-    例外:
-        ValueError … 名前が保存時の生成規則に一致しない場合
-
-    補足:
-        Path(...).name は末尾の要素だけを取り出すため、この時点で
-        'uploads/' や '../' といったディレクトリ部分は全て捨てられる。
-        そのうえで正規表現に完全一致するかを確かめるので、区切り文字も '..' も
-        通り抜けられない。
-    """
-    name = Path(raw_path).name
-
-    # 保存時にサーバー側が組み立てた名前の形式と一致しなければ拒否する
-    if not _SAFE_FILE_NAME_PATTERN.fullmatch(name):
-        raise ValueError("unexpected file name")
-
-    return name
-
-
-def _build_safe_upload_path(raw_path: str) -> Path:
-    """検証済みのファイル名と定数ディレクトリだけから、安全なパスを組み立て直して返す。
-
-    入力:
-        raw_path … DBに記録された保存パス文字列（信用しない値として扱う）
-
-    出力:
-        UPLOAD_DIR 配下を指すパス（Path）
-
-    例外:
-        ValueError … 名前が保存時の生成規則に一致しない場合
-
-    処理（パストラバーサル対策）:
-        パスの材料を「コード側の定数 UPLOAD_DIR」と「正規表現を通ったファイル名」の
-        2つだけに限定する。入力パスのディレクトリ部分は一切使わないため、
-        UPLOAD_DIR の外を指すパスは原理的に組み立てられない。
-
-        resolve() や is_relative_to() による「検査だけして元の値を使う」形は取らない。
-        SSRF対策と同じく、検証を通った要素から新しい値を作り直して sink に渡すことで、
-        静的解析(CodeQL)から見ても入力の汚染が sink まで届かなくなる。
-    """
-    safe_name = _sanitize_upload_name(raw_path)
-    return UPLOAD_DIR / safe_name
-
-
 def _extract_pdf(path: str) -> str:
     """PDFから本文を抽出する。"""
     # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
-    reader = PdfReader(_build_safe_upload_path(path))
+    reader = PdfReader(build_safe_upload_path(path))
     # ページごとにテキストを取り出し、改行で連結する
     pages = [page.extract_text() or "" for page in reader.pages]
     return "\n".join(pages)
@@ -134,7 +76,7 @@ def _extract_docx(path: str) -> str:
     """Word(.docx)から本文を抽出する。"""
     # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
     # python-docx の型定義は Path を受け取らないため str に変換して渡す（値は同じ）
-    document = Document(str(_build_safe_upload_path(path)))
+    document = Document(str(build_safe_upload_path(path)))
     # 段落（paragraph）ごとの文字列を改行で連結する
     paragraphs = [para.text for para in document.paragraphs]
     return "\n".join(paragraphs)
@@ -144,7 +86,7 @@ def _extract_pptx(path: str) -> str:
     """PowerPoint(.pptx)から本文を抽出する。"""
     # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
     # python-pptx の型定義は Path を受け取らないため str に変換して渡す（値は同じ）
-    presentation = Presentation(str(_build_safe_upload_path(path)))
+    presentation = Presentation(str(build_safe_upload_path(path)))
     texts: list[str] = []
     # スライド → 図形(shape) の順にたどり、テキストを持つ図形だけ集める
     for slide in presentation.slides:
@@ -157,7 +99,7 @@ def _extract_pptx(path: str) -> str:
 def _extract_txt(path: str) -> str:
     """テキスト(.txt)をそのまま読み込む。"""
     # 入力パスをそのまま開かず、検証済みの要素から作り直した安全なパスだけを開く
-    safe_path = _build_safe_upload_path(path)
+    safe_path = build_safe_upload_path(path)
 
     # 文字化けを避けるため UTF-8 で読み込む
     with open(safe_path, encoding="utf-8") as f:
