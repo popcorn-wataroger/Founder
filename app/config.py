@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Final
 
 from dotenv import load_dotenv
 
@@ -12,7 +13,7 @@ load_dotenv()
 # アップロードしたファイルの保存先ディレクトリ。
 # 保存側(sources_router)と読み込み側(vectorizer)の両方が「同じ1つの正解」を
 # 参照できるよう、どちらからも依存しない config に置く。
-UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR: Final[Path] = Path("uploads")
 
 # 実行環境の識別子。
 # 未設定のときは「本番相当」として扱う（既定値を置かない）。
@@ -20,18 +21,18 @@ UPLOAD_DIR = Path("uploads")
 # 開発用の既定値で起動が通ってしまい、設定漏れに気づけないため。
 # 危険側にフォールバックさせない、が原則。
 # ローカルは .env の APP_ENV=local、CIは ci.yml の APP_ENV=test で明示している。
-APP_ENV = os.getenv("APP_ENV", "")
+APP_ENV: Final[str] = os.getenv("APP_ENV", "")
 
 # 開発用のゆるい既定値を許してよい環境。
 # ここに含まれない値（未設定・production など）は本番相当として扱い、設定漏れを許さない。
-DEV_ENVS = frozenset({"local", "test"})
+DEV_ENVS: Final[frozenset[str]] = frozenset({"local", "test"})
 
 # JWT
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_HOURS = 8
+JWT_ALGORITHM: Final[str] = "HS256"
+JWT_EXPIRE_HOURS: Final[int] = 8
 
 # ローカル開発とテストでのみ使う署名鍵。本番では絶対に使わせない。
-_DEV_JWT_SECRET_KEY = "dev-only-insecure-jwt-secret"
+_DEV_JWT_SECRET_KEY: Final[str] = "dev-only-insecure-jwt-secret"
 
 
 def _load_jwt_secret_key() -> str:
@@ -64,11 +65,11 @@ def _load_jwt_secret_key() -> str:
     )
 
 
-JWT_SECRET_KEY = _load_jwt_secret_key()
+JWT_SECRET_KEY: Final[str] = _load_jwt_secret_key()
 
 # Gemini
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEY: Final[str] = os.getenv("GEMINI_API_KEY", "")
 
 # Qdrant（ベクトルDB）の接続情報。値は .env から読み込む（コードに直書きしない）
-QDRANT_URL = os.getenv("QDRANT_URL", "")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
+QDRANT_URL: Final[str] = os.getenv("QDRANT_URL", "")
+QDRANT_API_KEY: Final[str] = os.getenv("QDRANT_API_KEY", "")

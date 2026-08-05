@@ -138,7 +138,11 @@ http://localhost:8000 を開き、EMP001（社員画面）と ADMIN（管理者�
 
 #### 前提: Googleアカウントの2段階認証（MFA）
 
-**2026年7月20日から Google Cloud で2段階認証が必須化されました。**未設定のアカウントはコンソールに入れません。先に https://myaccount.google.com/security から2段階認証を有効にしてください。
+Google Cloud では多要素認証（MFA）が段階的に必須化されています。**適用時期はアカウントの種別によって異なる**ため、自分のアカウントがいつから対象になるかは公式ドキュメントで確認してください。
+
+- [Google Cloud の MFA 要件](https://cloud.google.com/identity/docs/mfa-requirement)
+
+必須化前でも有効にしておけば影響を受けません。未設定の場合は先に https://myaccount.google.com/security から2段階認証を有効にしておくことを勧めます。
 
 #### コンソールでの操作
 
@@ -197,25 +201,67 @@ gcloud secrets add-iam-policy-binding JWT_SECRET_KEY \
 
 デプロイ時に「どのシークレットをどの環境変数に入れるか」を指定します。コンテナ起動時にGCP側が値を注入するので、コンテナに `.env` を含める必要はありません。
 
+`--set-secrets` / `--update-secrets` の書式は `環境変数名=シークレット名:バージョン` です。左が環境変数名、右がSecret Manager側の名前で、今回は両者を同じ名前に揃えています。
+
+**本番ではバージョンを固定します**（`:latest` は使いません）。理由は下記「バージョン指定の方針」を参照してください。
+
+#### 新規デプロイ（サービスを初めて作るとき）
+
+既存の設定が無いため `--set-*` で構いません。
+
 ```bash
 gcloud run deploy founder \
   --project=notebooklm-482403 \
-  --set-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,QDRANT_API_KEY=QDRANT_API_KEY:latest,QDRANT_URL=QDRANT_URL:latest \
+  --set-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:1,GEMINI_API_KEY=GEMINI_API_KEY:1,QDRANT_API_KEY=QDRANT_API_KEY:1,QDRANT_URL=QDRANT_URL:1 \
   --set-env-vars=APP_ENV=production
 ```
 
-`--set-secrets` の書式は `環境変数名=シークレット名:バージョン` です。左が環境変数名、右がSecret Manager側の名前で、今回は両者を同じ名前に揃えています。
+#### 既存サービスの更新（2回目以降）
 
-`APP_ENV=production` を `--set-env-vars` で渡すのを忘れないでください。ただし忘れても危険な状態にはなりません。`app/config.py` は `APP_ENV` 未設定を本番相当として扱うため、`JWT_SECRET_KEY` が無ければ起動に失敗します。
+**既存サービスに `--set-*` を使ってはいけません。**
 
-#### `latest` とバージョン固定の違い
+- `--set-env-vars` … 指定しなかった既存の環境変数を**すべて削除**する
+- `--set-secrets` … 指定しなかった既存のシークレット設定を**すべて削除**する
 
-| 指定 | 挙動 | 向いている場面 |
+たとえば `APP_ENV` だけ変えるつもりで `--set-env-vars=APP_ENV=production` を実行すると、他の環境変数（`GCS_BUCKET_NAME` など）が消えます。追加・変更したいものだけを渡す `--update-*` を使ってください。
+
+```bash
+# 環境変数を1つだけ変える（他の環境変数は維持される）
+gcloud run services update founder \
+  --project=notebooklm-482403 \
+  --update-env-vars=APP_ENV=production
+
+# シークレットのバージョンを1つだけ差し替える（他のシークレット設定は維持される）
+gcloud run services update founder \
+  --project=notebooklm-482403 \
+  --update-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:2
+```
+
+不要になった設定を消したいときは、削除専用の `--remove-env-vars` / `--remove-secrets` を使います。
+
+`APP_ENV=production` を渡すのを忘れないでください。ただし忘れても危険な状態にはなりません。`app/config.py` は `APP_ENV` 未設定を本番相当として扱うため、`JWT_SECRET_KEY` が無ければ起動に失敗します。
+
+#### バージョン指定の方針
+
+| 指定 | 挙動 | 使う場面 |
 |---|---|---|
-| `JWT_SECRET_KEY:latest` | デプロイのたびに最新バージョンを読む | 通常運用。キーを入れ替えても再デプロイだけで反映される |
-| `JWT_SECRET_KEY:1` | 常にバージョン1を読む | 「どのリビジョンがどの値で動いていたか」を厳密に固定したい場合 |
+| `JWT_SECRET_KEY:1` | 常にバージョン1を読む | **本番の既定。これを使う** |
+| `JWT_SECRET_KEY:latest` | インスタンス起動時点の最新を読む | 本番では使わない |
 
-`latest` は「デプロイ時点の最新」を読むだけで、稼働中のコンテナが自動で追随するわけではありません。値を変えたら**必ず再デプロイが必要**です。
+**本番で `latest` を使わない理由**
+
+Cloud Run は環境変数にマウントしたシークレットを**インスタンスの起動時に解決**します。値を読み直すタイミングはインスタンスごとにバラバラです。
+
+`latest` のままローテーションすると、こうなります。
+
+1. Secret Manager にバージョン2を追加する
+2. すでに動いているインスタンスは、起動時に読んだバージョン1を持ったまま
+3. その後スケールアウトで増えたインスタンスは、起動時にバージョン2を読む
+4. **バージョン1とバージョン2が同時に稼働する**
+
+`JWT_SECRET_KEY` でこれが起きると、バージョン1の鍵で署名されたトークンをバージョン2のインスタンスが検証して失敗し、利用者が不定期にログアウトされます。しかもどのインスタンスに当たるかは運次第なので、「たまにログインが切れる」という再現しにくい障害になります。
+
+バージョンを固定しておけば、値が変わるのは明示的に再デプロイしたときだけです。新しいリビジョンへ切り替わる形になるため、どの鍵で動いているかが常に一意に決まります。
 
 ---
 
@@ -223,32 +269,45 @@ gcloud run deploy founder \
 
 漏れたときに差し替えられないと、シークレット管理をしている意味がありません。手順を決めておきます。
 
+Cloud Run はバージョンを固定して参照しているため、**新しいバージョンを追加しただけでは反映されません。**新しいバージョン番号を明示して再デプロイするところまでが1セットです。
+
 #### コンソールでの操作
 
 1. Secret Manager で対象のシークレットを開く
 2. 「**バージョン**」タブを選ぶ
 3. 「**+ 新しいバージョン**」をクリックし、新しい値を入力して追加する（古いバージョンはこの時点では残す）
-4. Cloud Run を再デプロイして、新しいバージョンを読み込ませる
-5. 動作確認する（EMP001 と ADMIN の両画面でログイン〜チャット）
-6. 問題なければ古いバージョンを「**無効化**」する
-7. しばらく様子を見て、戻す必要がないと確認できたら「**破棄**」する
+4. 追加されたバージョン番号を控える（例: バージョン2）
+5. Cloud Run のマウント設定を**新しいバージョン番号に書き換えて**再デプロイする（`:latest` にはしない）
+6. 動作確認する（EMP001 と ADMIN の両画面でログイン〜チャット）
+7. 問題なければ古いバージョンを「**無効化**」する
+8. しばらく様子を見て、戻す必要がないと確認できたら「**破棄**」する
 
 いきなり破棄せず、無効化を挟むのが重要です。無効化は元に戻せますが、破棄は元に戻せません。無効化した状態で問題が起きたら、すぐ有効化して切り戻せます。
 
 #### gcloud CLI での操作
 
 ```bash
-# 新しいバージョンを追加
+# 1. 新しいバージョンを追加する
 gcloud secrets versions add JWT_SECRET_KEY \
   --data-file=/path/to/new-secret.txt \
   --project=notebooklm-482403
 
-# 再デプロイ後、動作確認してから古いバージョンを無効化
+# 2. 追加されたバージョン番号を確認する
+gcloud secrets versions list JWT_SECRET_KEY --project=notebooklm-482403
+
+# 3. 新しいバージョン番号を明示して更新する（他の設定を消さないため --update-secrets を使う）
+gcloud run services update founder \
+  --project=notebooklm-482403 \
+  --update-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:2
+
+# 4. 動作確認してから古いバージョンを無効化する
 gcloud secrets versions disable 1 --secret=JWT_SECRET_KEY --project=notebooklm-482403
 
-# 切り戻しが不要と確認できたら破棄（取り消せない）
+# 5. 切り戻しが不要と確認できたら破棄する（取り消せない）
 gcloud secrets versions destroy 1 --secret=JWT_SECRET_KEY --project=notebooklm-482403
 ```
+
+手順4の無効化は、再デプロイが完了し新しいリビジョンへ切り替わったことを確認してから行ってください。古いリビジョンが残っている状態でバージョン1を無効化すると、そのリビジョンのインスタンスが起動できなくなります。
 
 #### `JWT_SECRET_KEY` を入れ替えるときの注意
 
