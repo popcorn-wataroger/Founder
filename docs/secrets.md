@@ -209,12 +209,33 @@ gcloud secrets add-iam-policy-binding JWT_SECRET_KEY \
 
 既存の設定が無いため `--set-*` で構いません。
 
+`gcloud run deploy` は**デプロイする中身（コンテナイメージ）の指定が必須**です。`--image` か `--source` のどちらかを必ず付けてください。付けないとコマンドがエラーになります。
+
+**A. ビルド済みのコンテナイメージを使う場合**
+
 ```bash
 gcloud run deploy founder \
   --project=notebooklm-482403 \
+  --image=REGION-docker.pkg.dev/notebooklm-482403/REPOSITORY/IMAGE:TAG \
   --set-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:1,GEMINI_API_KEY=GEMINI_API_KEY:1,QDRANT_API_KEY=QDRANT_API_KEY:1,QDRANT_URL=QDRANT_URL:1 \
   --set-env-vars=APP_ENV=production
 ```
+
+`REGION` / `REPOSITORY` / `IMAGE` / `TAG` は Artifact Registry に push した実際の値に置き換えます（例: `asia-northeast1-docker.pkg.dev/notebooklm-482403/founder/founder:v1`）。
+
+**B. ローカルのソースからビルドする場合**
+
+```bash
+gcloud run deploy founder \
+  --project=notebooklm-482403 \
+  --source=. \
+  --set-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:1,GEMINI_API_KEY=GEMINI_API_KEY:1,QDRANT_API_KEY=QDRANT_API_KEY:1,QDRANT_URL=QDRANT_URL:1 \
+  --set-env-vars=APP_ENV=production
+```
+
+`--source=.` はカレントディレクトリを Cloud Build へ送り、GCP側でイメージをビルドしてからデプロイします。リポジトリに `Dockerfile` があることが前提です。
+
+> **イメージ／`Dockerfile` の作成そのものは Issue #66（Cloud Run デプロイ）の担当範囲です。**本ドキュメント（Issue #67）はシークレットの受け渡し方だけを扱います。上のコマンドは #66 でイメージが用意できた後に実行するものと考えてください。
 
 #### 既存サービスの更新（2回目以降）
 
@@ -232,10 +253,15 @@ gcloud run services update founder \
   --update-env-vars=APP_ENV=production
 
 # シークレットのバージョンを1つだけ差し替える（他のシークレット設定は維持される）
+# NEW_VERSION は下記コマンドで確認した番号を毎回入れる。固定の数字を書かない
+gcloud secrets versions list JWT_SECRET_KEY --project=notebooklm-482403
+
 gcloud run services update founder \
   --project=notebooklm-482403 \
-  --update-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:2
+  --update-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:$NEW_VERSION
 ```
+
+バージョンを差し替えるときは、トラフィックの切り替えと旧バージョンの無効化までがセットです。手順は「4. キーの入れ替え（ローテーション）手順」を参照してください。
 
 不要になった設定を消したいときは、削除専用の `--remove-env-vars` / `--remove-secrets` を使います。
 
@@ -261,7 +287,14 @@ Cloud Run は環境変数にマウントしたシークレットを**インス�
 
 `JWT_SECRET_KEY` でこれが起きると、バージョン1の鍵で署名されたトークンをバージョン2のインスタンスが検証して失敗し、利用者が不定期にログアウトされます。しかもどのインスタンスに当たるかは運次第なので、「たまにログインが切れる」という再現しにくい障害になります。
 
-バージョンを固定しておけば、値が変わるのは明示的に再デプロイしたときだけです。新しいリビジョンへ切り替わる形になるため、どの鍵で動いているかが常に一意に決まります。
+バージョンを固定しておけば、値が変わるのは明示的に再デプロイしたときだけです。**どのバージョンを読むかはリビジョン単位で決まる**ため、1つのリビジョンの中では鍵が混ざりません。
+
+ただし「システム全体で常に1つの鍵しか動いていない」という意味ではありません。Cloud Run は複数のリビジョンにトラフィックを分割できるため、**新旧のリビジョンが併存している間は、旧バージョンの鍵と新バージョンの鍵が同時に稼働します**。`latest` のときと違うのは、それが運任せではなく、トラフィック配分として自分で制御できる点です。
+
+この性質から、ローテーション時は次の順序を守る必要があります。
+
+- 旧リビジョンが動いている間は、旧バージョンを無効化してはいけない（そのリビジョンのインスタンスが起動できなくなる）
+- 旧リビジョンのトラフィックを 0% にし、切り戻しが不要と確認してから、旧バージョンを無効化・破棄する
 
 ---
 
@@ -269,45 +302,85 @@ Cloud Run は環境変数にマウントしたシークレットを**インス�
 
 漏れたときに差し替えられないと、シークレット管理をしている意味がありません。手順を決めておきます。
 
-Cloud Run はバージョンを固定して参照しているため、**新しいバージョンを追加しただけでは反映されません。**新しいバージョン番号を明示して再デプロイするところまでが1セットです。
+Cloud Run はバージョンを固定して参照しているため、**新しいバージョンを追加しただけでは反映されません。**新しいバージョン番号を明示して再デプロイし、**新しいリビジョンへトラフィックを寄せ切る**ところまでが1セットです。
+
+流れは次の5段階です。
+
+1. Secret Manager に新しいバージョンを追加する
+2. Cloud Run を新しいバージョン番号で更新する（＝新しいリビジョンが作られる）
+3. 新しいリビジョンへトラフィックを100%移し、旧リビジョンを0%にする
+4. 動作確認したら、旧バージョンを**無効化**する
+5. 切り戻しが不要と確認できたら、旧バージョンを**破棄**する
+
+順序を入れ替えないでください。旧リビジョンにトラフィックが残ったまま旧バージョンを無効化すると、そのリビジョンのインスタンスが起動できなくなります。
 
 #### コンソールでの操作
 
 1. Secret Manager で対象のシークレットを開く
 2. 「**バージョン**」タブを選ぶ
 3. 「**+ 新しいバージョン**」をクリックし、新しい値を入力して追加する（古いバージョンはこの時点では残す）
-4. 追加されたバージョン番号を控える（例: バージョン2）
-5. Cloud Run のマウント設定を**新しいバージョン番号に書き換えて**再デプロイする（`:latest` にはしない）
-6. 動作確認する（EMP001 と ADMIN の両画面でログイン〜チャット）
-7. 問題なければ古いバージョンを「**無効化**」する
-8. しばらく様子を見て、戻す必要がないと確認できたら「**破棄**」する
+4. 追加されたバージョン番号を控える（**毎回この画面で確認する。前回の番号を覚えて使わない**）
+5. Cloud Run のマウント設定を**手順4で控えた番号に書き換えて**再デプロイする（`:latest` にはしない）
+6. Cloud Run サービスの「**リビジョン**」タブを開き、新しいリビジョンのトラフィックが100%、旧リビジョンが0%になっていることを確認する
+7. 動作確認する（EMP001 と ADMIN の両画面でログイン〜チャット）
+8. 問題なければ古いバージョンを「**無効化**」する
+9. しばらく様子を見て、戻す必要がないと確認できたら「**破棄**」する
 
 いきなり破棄せず、無効化を挟むのが重要です。無効化は元に戻せますが、破棄は元に戻せません。無効化した状態で問題が起きたら、すぐ有効化して切り戻せます。
 
 #### gcloud CLI での操作
 
+**バージョン番号は毎回必ず確認して入れてください。**下のコマンドは番号を直接書かず、`OLD_VERSION` / `NEW_VERSION` という変数に入れる形にしています。数字を固定で書いた例をコピーして2回目以降のローテーションでそのまま流すと、**いま稼働中の新しいバージョンを無効化・破棄してしまい、Cloud Run が起動できなくなります**（`disable` は有効化で戻せますが、`destroy` は戻せません）。
+
 ```bash
+# 0. 対象のシークレットと共通設定
+SECRET=JWT_SECRET_KEY
+PROJECT=notebooklm-482403
+SERVICE=founder
+
 # 1. 新しいバージョンを追加する
-gcloud secrets versions add JWT_SECRET_KEY \
+gcloud secrets versions add "$SECRET" \
   --data-file=/path/to/new-secret.txt \
-  --project=notebooklm-482403
+  --project="$PROJECT"
 
-# 2. 追加されたバージョン番号を確認する
-gcloud secrets versions list JWT_SECRET_KEY --project=notebooklm-482403
+# 2. 現在のバージョン一覧を確認する（ここで見た番号だけを使う）
+gcloud secrets versions list "$SECRET" --project="$PROJECT"
 
-# 3. 新しいバージョン番号を明示して更新する（他の設定を消さないため --update-secrets を使う）
-gcloud run services update founder \
-  --project=notebooklm-482403 \
-  --update-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:2
+# 3. 手順2の出力を見て、自分で番号を入れる
+#    NEW_VERSION = 手順1で追加された番号
+#    OLD_VERSION = いま Cloud Run が参照している番号（次のコマンドで確認できる）
+gcloud run services describe "$SERVICE" --project="$PROJECT" \
+  --format="value(spec.template.spec.containers[0].env)"
 
-# 4. 動作確認してから古いバージョンを無効化する
-gcloud secrets versions disable 1 --secret=JWT_SECRET_KEY --project=notebooklm-482403
+NEW_VERSION=  # 例: 2（必ず手順2の出力を見て入れる）
+OLD_VERSION=  # 例: 1（必ず現在の参照先を確認して入れる）
 
-# 5. 切り戻しが不要と確認できたら破棄する（取り消せない）
-gcloud secrets versions destroy 1 --secret=JWT_SECRET_KEY --project=notebooklm-482403
+# 4. 新しいバージョン番号を明示して更新する（他の設定を消さないため --update-secrets を使う）
+#    このコマンドで新しいリビジョンが作られる
+gcloud run services update "$SERVICE" \
+  --project="$PROJECT" \
+  --update-secrets="$SECRET=$SECRET:$NEW_VERSION"
+
+# 5. トラフィックを最新リビジョンへ100%寄せる（旧リビジョンを0%にする）
+gcloud run services update-traffic "$SERVICE" \
+  --project="$PROJECT" \
+  --to-latest
+
+# 6. 旧リビジョンが0%になったことを確認する
+gcloud run revisions list --service="$SERVICE" --project="$PROJECT"
+
+# 7. 動作確認してから旧バージョンを無効化する
+gcloud secrets versions disable "$OLD_VERSION" --secret="$SECRET" --project="$PROJECT"
+
+# 8. 切り戻しが不要と確認できたら破棄する（取り消せない）
+gcloud secrets versions destroy "$OLD_VERSION" --secret="$SECRET" --project="$PROJECT"
 ```
 
-手順4の無効化は、再デプロイが完了し新しいリビジョンへ切り替わったことを確認してから行ってください。古いリビジョンが残っている状態でバージョン1を無効化すると、そのリビジョンのインスタンスが起動できなくなります。
+手順7・8で使う `OLD_VERSION` は、**手順6で0%になったリビジョンが参照していた番号**です。`NEW_VERSION` と取り違えると、稼働中のリビジョンが読んでいるバージョンを止めることになり、インスタンスの起動に失敗します（新規インスタンスが立ち上がらず、スケールアウトやリビジョン再起動のタイミングで障害になります）。
+
+手順5でトラフィックを寄せ切らずに手順7へ進むのも同じ理由で危険です。旧リビジョンが少しでもトラフィックを持っている状態で旧バージョンを無効化すると、そのリビジョンのインスタンスが起動できなくなります。
+
+`--to-latest` は「常に最新リビジョンへ100%」という設定です。段階的に移したい場合は `--to-revisions=新リビジョン名=100` のようにリビジョン名を指定します。
 
 #### `JWT_SECRET_KEY` を入れ替えるときの注意
 
