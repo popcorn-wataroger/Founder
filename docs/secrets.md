@@ -184,16 +184,60 @@ gcloud secrets versions list JWT_SECRET_KEY --project=notebooklm-482403
 
 Cloud Run のサービスアカウントに `roles/secretmanager.secretAccessor` を付与します。**プロジェクト全体ではなく、シークレット単位で付けること。**プロジェクト全体に付けると、そのサービスアカウントは将来追加される別のシークレットまで自動的に読めてしまいます。
 
+> **付与はデプロイより先に行います。**`--set-secrets` を付けてデプロイすると、Cloud Run はその時点で各シークレットを読めるかを検証します。権限が無いとデプロイ自体が権限不足で失敗するため、「サービスを作ってから権限を付ける」順番では初回デプロイが通りません。
+
+#### 付与先のサービスアカウントを決める
+
+デプロイ先のサービスが使うサービスアカウントに付与します。サービスを作る前でも、次のどちらかで決まります。
+
+| 使うアカウント | アドレス |
+|---|---|
+| 既定の Cloud Run サービスアカウント（`--service-account` を指定しない場合） | `PROJECT_NUMBER-compute@developer.gserviceaccount.com`（本プロジェクトは `525613033246-compute@developer.gserviceaccount.com`） |
+| 専用アカウントを使う場合（`--service-account` で指定） | 自分で作成したアカウントのアドレス |
+
+専用アカウントを使うほうが権限を絞れるので望ましいですが、その場合は先に `gcloud iam service-accounts create` で作成しておきます。
+
+#### 付与コマンド
+
 ```bash
-gcloud secrets add-iam-policy-binding JWT_SECRET_KEY \
-  --member="serviceAccount:サービスアカウント名@notebooklm-482403.iam.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor" \
-  --project=notebooklm-482403
+SA="525613033246-compute@developer.gserviceaccount.com"  # 実際に使うアカウントに置き換える
+
+for SECRET in JWT_SECRET_KEY GEMINI_API_KEY QDRANT_API_KEY QDRANT_URL; do
+  gcloud secrets add-iam-policy-binding "$SECRET" \
+    --member="serviceAccount:$SA" \
+    --role="roles/secretmanager.secretAccessor" \
+    --project=notebooklm-482403
+done
 ```
 
-4つのシークレットそれぞれに対して同じコマンドを実行します。
+4つのシークレットそれぞれに対して付与する必要があります（1つでも漏れるとデプロイが失敗します）。
 
-> **この作業は Cloud Run のサービス作成後に行います。**付与先のサービスアカウントは Cloud Run のサービスを作らないと決まらないため、実際の付与は Issue #66（Cloud Run デプロイ）の中で実施します。
+#### 事前に付与できない場合（二段階デプロイ）
+
+サービスアカウントを先に決められない、または権限付与の承認待ちなどで事前付与ができないときは、次の二段階に分けます。
+
+```bash
+# 1. シークレットを付けずにサービスを作る（この時点では検証されないので成功する）
+gcloud run deploy founder \
+  --project=notebooklm-482403 \
+  --image=REGION-docker.pkg.dev/notebooklm-482403/REPOSITORY/IMAGE:TAG \
+  --set-env-vars=APP_ENV=production
+
+# 2. 実際に割り当てられたサービスアカウントを確認する
+gcloud run services describe founder --project=notebooklm-482403 \
+  --format="value(spec.template.spec.serviceAccountName)"
+
+# 3. 手順2のアカウントへ、上の「付与コマンド」で権限を付ける
+
+# 4. 権限が付いてからシークレットを設定する
+gcloud run services update founder \
+  --project=notebooklm-482403 \
+  --update-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:1,GEMINI_API_KEY=GEMINI_API_KEY:1,QDRANT_API_KEY=QDRANT_API_KEY:1,QDRANT_URL=QDRANT_URL:1
+```
+
+手順1では `APP_ENV=production` を渡しているため `JWT_SECRET_KEY` が無く、**アプリは起動に失敗します**（`app/config.py` の仕様どおりの挙動）。手順4まで進めば正常に起動します。デプロイのコマンド自体は成功しますが、コンテナが立ち上がらない状態が手順4まで続く点を承知しておいてください。
+
+> 実際の権限付与とデプロイは Issue #66（Cloud Run デプロイ）の中で実施します。本ドキュメント（Issue #67）は、そのときに何をどの順番でやるかを定義しています。
 
 ---
 
@@ -209,7 +253,9 @@ gcloud secrets add-iam-policy-binding JWT_SECRET_KEY \
 
 既存の設定が無いため `--set-*` で構いません。
 
-`gcloud run deploy` は**デプロイする中身（コンテナイメージ）の指定が必須**です。`--image` か `--source` のどちらかを必ず付けてください。付けないとコマンドがエラーになります。
+**先に「2. 権限（IAM）の付与」を済ませておいてください。**`--set-secrets` を付けたデプロイは、その時点でシークレットを読めるか検証されます。
+
+`gcloud run deploy` に `--image` を付けないと、gcloud はカレントディレクトリをソースとみなす **source deployment**（Cloud Build でソースからイメージを構築してデプロイする方式）を試みます。どちらの方式で動いているかが暗黙にならないよう、**この手順では `--image` または `--source` を明示的に付けます。**
 
 **A. ビルド済みのコンテナイメージを使う場合**
 
@@ -233,9 +279,14 @@ gcloud run deploy founder \
   --set-env-vars=APP_ENV=production
 ```
 
-`--source=.` はカレントディレクトリを Cloud Build へ送り、GCP側でイメージをビルドしてからデプロイします。リポジトリに `Dockerfile` があることが前提です。
+`--source=.` はカレントディレクトリを Cloud Build へ送り、GCP側でイメージをビルドしてからデプロイします（source deployment）。ビルド方法は次のように決まります。
 
-> **イメージ／`Dockerfile` の作成そのものは Issue #66（Cloud Run デプロイ）の担当範囲です。**本ドキュメント（Issue #67）はシークレットの受け渡し方だけを扱います。上のコマンドは #66 でイメージが用意できた後に実行するものと考えてください。
+- `Dockerfile` がある場合 … その `Dockerfile` でビルドする
+- `Dockerfile` が無い場合 … Google Cloud の **buildpacks** が言語を判定してイメージを自動生成する（Python なら `pyproject.toml` / `requirements.txt` を見て構成する）
+
+AとBの違いは「イメージを誰がいつ作るか」です。Aは事前にビルドして Artifact Registry に push 済みのイメージを指定するため、デプロイされる中身が完全に固定されます。Bはデプロイのたびに GCP 側でビルドが走るため手軽ですが、ビルド結果はそのときのソースと buildpacks のバージョンに依存します。本番運用ではAを推奨します。
+
+> **イメージ／`Dockerfile` の作成そのものは Issue #66（Cloud Run デプロイ）の担当範囲です。**本ドキュメント（Issue #67）はシークレットの受け渡し方だけを扱います。上のコマンドは #66 でイメージの方式が決まった後に実行するものと考えてください。
 
 #### 既存サービスの更新（2回目以降）
 
@@ -308,7 +359,7 @@ Cloud Run はバージョンを固定して参照しているため、**新し�
 
 1. Secret Manager に新しいバージョンを追加する
 2. Cloud Run を新しいバージョン番号で更新する（＝新しいリビジョンが作られる）
-3. 新しいリビジョンへトラフィックを100%移し、旧リビジョンを0%にする
+3. 新しいリビジョンへトラフィックを100%移し、**旧リビジョンをすべて0%**にする
 4. 動作確認したら、旧バージョンを**無効化**する
 5. 切り戻しが不要と確認できたら、旧バージョンを**破棄**する
 
@@ -321,7 +372,7 @@ Cloud Run はバージョンを固定して参照しているため、**新し�
 3. 「**+ 新しいバージョン**」をクリックし、新しい値を入力して追加する（古いバージョンはこの時点では残す）
 4. 追加されたバージョン番号を控える（**毎回この画面で確認する。前回の番号を覚えて使わない**）
 5. Cloud Run のマウント設定を**手順4で控えた番号に書き換えて**再デプロイする（`:latest` にはしない）
-6. Cloud Run サービスの「**リビジョン**」タブを開き、新しいリビジョンのトラフィックが100%、旧リビジョンが0%になっていることを確認する
+6. Cloud Run サービスの「**リビジョン**」タブを開き、新しいリビジョンが100%で、**それ以外のリビジョンがすべて0%**になっていることを確認する（過去のリビジョンが複数残っていることがあるので、一覧を最後まで見る）
 7. 動作確認する（EMP001 と ADMIN の両画面でログイン〜チャット）
 8. 問題なければ古いバージョンを「**無効化**」する
 9. しばらく様子を見て、戻す必要がないと確認できたら「**破棄**」する
@@ -366,8 +417,10 @@ gcloud run services update-traffic "$SERVICE" \
   --project="$PROJECT" \
   --to-latest
 
-# 6. 旧リビジョンが0%になったことを確認する
-gcloud run revisions list --service="$SERVICE" --project="$PROJECT"
+# 6. 各リビジョンのトラフィック配分を確認する
+#    最新リビジョン以外がすべて0%になっていること
+gcloud run revisions list --service="$SERVICE" --project="$PROJECT" \
+  --format='table(revision.metadata.name, trafficPercentages[0].percentages[0].percentages[0])'
 
 # 7. 動作確認してから旧バージョンを無効化する
 gcloud secrets versions disable "$OLD_VERSION" --secret="$SECRET" --project="$PROJECT"
@@ -376,11 +429,40 @@ gcloud secrets versions disable "$OLD_VERSION" --secret="$SECRET" --project="$PR
 gcloud secrets versions destroy "$OLD_VERSION" --secret="$SECRET" --project="$PROJECT"
 ```
 
-手順7・8で使う `OLD_VERSION` は、**手順6で0%になったリビジョンが参照していた番号**です。`NEW_VERSION` と取り違えると、稼働中のリビジョンが読んでいるバージョンを止めることになり、インスタンスの起動に失敗します（新規インスタンスが立ち上がらず、スケールアウトやリビジョン再起動のタイミングで障害になります）。
+**手順7へ進んでよいのは、トラフィックが0%より大きい旧リビジョンが1つも残っていないときだけです。**Cloud Run には過去のリビジョンが複数残り、それぞれが別のシークレットバージョンを参照していることがあります。手順6の一覧を上から下まで見て、最新リビジョン以外がすべて0%になっていることを確認してください。1つでもトラフィックを持っている旧リビジョンがある状態で無効化・破棄へ進むと、そのリビジョンのインスタンスが起動できなくなります。
 
-手順5でトラフィックを寄せ切らずに手順7へ進むのも同じ理由で危険です。旧リビジョンが少しでもトラフィックを持っている状態で旧バージョンを無効化すると、そのリビジョンのインスタンスが起動できなくなります。
+手順7・8で使う `OLD_VERSION` は、**0%に落としたリビジョンが参照していた番号**です。`NEW_VERSION` と取り違えると、稼働中のリビジョンが読んでいるバージョンを止めることになり、インスタンスの起動に失敗します（新規インスタンスが立ち上がらず、スケールアウトやリビジョン再起動のタイミングで障害になります）。
 
-`--to-latest` は「常に最新リビジョンへ100%」という設定です。段階的に移したい場合は `--to-revisions=新リビジョン名=100` のようにリビジョン名を指定します。
+過去に複数回ローテーションしていて、どのリビジョンがどの番号を参照しているか分からなくなった場合は、リビジョン単位で確認できます。
+
+```bash
+gcloud run revisions describe REVISION_NAME --project="$PROJECT" \
+  --format="value(spec.containers[0].env)"
+```
+
+#### 段階的にトラフィックを移す場合
+
+`--to-latest` は最新リビジョンへ一度に100%移します。影響を小さく確かめながら進めたいときは、配分を少しずつ増やします。
+
+```bash
+# 10% だけ新リビジョンへ流す（残り90%は旧リビジョンのまま）
+gcloud run services update-traffic "$SERVICE" --project="$PROJECT" \
+  --to-revisions=NEW_REVISION=10
+
+# 動作確認できたら 50%
+gcloud run services update-traffic "$SERVICE" --project="$PROJECT" \
+  --to-revisions=NEW_REVISION=50
+
+# 問題なければ 100%（＝旧リビジョンが0%になる）
+gcloud run services update-traffic "$SERVICE" --project="$PROJECT" \
+  --to-revisions=NEW_REVISION=100
+```
+
+各段階で動作確認（EMP001 と ADMIN の両画面でログイン〜チャット）を行い、問題があればその時点で前の配分へ戻します。
+
+ただし `JWT_SECRET_KEY` の入れ替えでは、10%／50%の途中段階は新旧の鍵が同時に稼働する状態です。旧鍵で発行されたトークンが新リビジョンに当たると検証に失敗するため、**「たまにログアウトされる」状態が移行中ずっと続きます**。`JWT_SECRET_KEY` は段階的移行を使わず、`--to-latest` で一気に切り替えるほうが混乱が少なくなります。段階的移行が向くのは `GEMINI_API_KEY` / `QDRANT_API_KEY` / `QDRANT_URL` のように、既存トークンの検証に関わらないシークレットです。
+
+なお100%まで移し切るまでは旧リビジョンにトラフィックが残るため、手順7（無効化）へ進めるのは最後の段階を終えてからです。
 
 #### `JWT_SECRET_KEY` を入れ替えるときの注意
 
