@@ -4,15 +4,16 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.config import UPLOAD_DIR
+from app import storage
 from app.database import get_connection
 from app.routers.auth_router import require_admin
-from app.upload_paths import build_safe_upload_path
+from app.upload_paths import sanitize_upload_name
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
 from app.vectorizer import embed_text, extract_text, split_into_chunks
 
@@ -140,12 +141,12 @@ def _sanitize_for_log(value: object) -> str:
     return str(value).replace("\r", "").replace("\n", "")
 
 
-def _rollback_source(source_id: int, save_path: Path | None) -> None:
+def _rollback_source(source_id: int, file_path: str | None) -> None:
     """ベクトル化に失敗したとき、DB登録とファイル保存を取り消す。
 
     入力:
         source_id … 取り消したいソースのID
-        save_path … 保存したファイルのパス（URL登録などファイルが無い場合は None）
+        file_path … 保存したファイルのキー（URL登録などファイルが無い場合は None）
 
     出力:
         なし
@@ -155,6 +156,11 @@ def _rollback_source(source_id: int, save_path: Path | None) -> None:
         「一覧には出るのにAIが中身を知らないソース」ができてしまう。
         社長から見ると登録できたように見えるのに、誰が質問しても答えられない。
         中途半端な状態を残さないよう、失敗時は登録前の状態まで戻す。
+
+    なぜ Path ではなく文字列を受け取るか:
+        保存先はローカルとは限らない（GCSにはパスではなくオブジェクト名がある）。
+        「どこに保存されているか」は app/storage.py だけが知っていればよいので、
+        ここでは storage が解釈できるキーを、そのまま storage.delete に渡す。
     """
     # DBの登録を取り消す
     conn = get_connection()
@@ -162,9 +168,9 @@ def _rollback_source(source_id: int, save_path: Path | None) -> None:
     conn.commit()
     conn.close()
 
-    # 保存した実ファイルも消す（ファイルが無い登録＝URLの場合はスキップ）
-    if save_path is not None and save_path.exists():
-        save_path.unlink()
+    # 保存した実体も消す（ファイルが無い登録＝URLの場合はスキップ）
+    if file_path is not None:
+        storage.delete(file_path)
 
 
 def _vectorize_and_save(
@@ -236,7 +242,7 @@ async def upload_source(
 
     処理:
         1. 入力チェック（scope、ファイル名、拡張子、サイズ）
-        2. uploads/ にファイルを保存する
+        2. ストレージにファイルを保存する（保存先がGCSかローカルかは storage が決める）
         3. sources テーブルに登録し、source_id を採番する
         4. 本文を取り出してベクトル化し、Qdrantに保存する
         5. 4が失敗したら、3のDB登録と2のファイル保存を取り消して（ロールバック）エラーを返す
@@ -259,36 +265,35 @@ async def upload_source(
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="ファイルサイズが50MBを超えています")
 
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
     # ソース種別（pdf / docx / pptx / txt）。上のチェックを通っているので必ず辞書に存在する
     file_type = suffix.lstrip(".")
 
-    # ディスク上の保存名は、ユーザーのファイル名を一切使わずサーバー側で組み立てる
+    # 保存名は、ユーザーのファイル名を一切使わずサーバー側で組み立てる
     # なぜ必要か（パストラバーサル対策）:
     #     file.filename はクライアントが自由に決められる文字列で、
     #     '../../app/main.py' や '/etc/cron.d/evil' のような値も送りつけられる。
     #     これをそのまま連結すると uploads/ の外へ書き込めてしまう
     #     （Path の / は「安全な結合」ではなく単なる連結で、右が絶対パスなら左を捨てる）。
+    #     GCSでも同じで、'../' を含む名前は意図しない場所を指しうる。
     # timestamp   … 人が見て「いつの投入か」を追えるように
     # uuid4       … 同時アップロードでも名前が衝突しないように
     # safe_suffix … ユーザーのファイル名から切り出した文字列ではなく、
-    #               EXTENSION_BY_TYPE が持つ定数を使う。これで保存パスを組み立てる
+    #               EXTENSION_BY_TYPE が持つ定数を使う。これで保存名を組み立てる
     #               材料が全てコード側の値になり、ユーザー入力が1文字も混ざらない
     safe_suffix = EXTENSION_BY_TYPE[file_type]
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     save_name = f"{timestamp}_{uuid.uuid4()}{safe_suffix}"
-    save_path = UPLOAD_DIR / save_name
 
-    # 書き込む直前に「本当に uploads/ の中か」を最終確認する（多層防御）
-    # なぜ必要か（パストラバーサル対策）:
-    #     上の生成方法なら理屈上は外に出ないが、将来ここのコードが変わったときに
-    #     気づかず穴が開くのを防ぐ。resolve() で '..' やシンボリックリンクを解決した
-    #     実体パスに直したうえで、uploads/ の配下にあることを確かめる。
-    if not save_path.resolve().is_relative_to(UPLOAD_DIR.resolve()):
-        raise HTTPException(status_code=400, detail="不正なファイル名です")
-
-    save_path.write_bytes(contents)
+    # 保存する。保存先がGCSかローカルかは storage が判断するので、ここでは意識しない。
+    # 戻り値の file_path は、後で読み出すときに storage へ渡すキー（DBにも記録する）
+    try:
+        file_path = storage.save(save_name, contents)
+    except Exception:
+        # ファイル名はユーザー入力なので、改行を落としてからログに渡す
+        logger.exception(
+            "ファイルの保存に失敗しました file_name=%s", _sanitize_for_log(file.filename)
+        )
+        raise HTTPException(status_code=500, detail="ファイルの保存に失敗しました")
 
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
@@ -301,11 +306,11 @@ async def upload_source(
         """,
         (
             # file_name … 画面に表示する「元のファイル名」。表示専用で、パスの組み立てには使わない
-            # file_path … 実際の保存先。上で生成した安全な名前（uploads/ の中）
-            # 「見せる名前」と「ディスク上の名前」を分けることでパストラバーサルを断つ
+            # file_path … 読み出しに使うキー。上で生成した安全な名前だけから作られている
+            # 「見せる名前」と「保存先の名前」を分けることでパストラバーサルを断つ
             file.filename,
             file_type,
-            str(save_path),
+            file_path,
             scope,
             owner_user_id,
             uploaded_at,
@@ -327,7 +332,7 @@ async def upload_source(
     try:
         chunk_count = _vectorize_and_save(
             source_id=source_id,
-            path=str(save_path),
+            path=file_path,
             file_type=file_type,
             scope=scope,
             owner_user_id=owner_user_id,
@@ -337,7 +342,7 @@ async def upload_source(
         logger.exception(
             "ベクトル化に失敗しました。ソース登録を取り消します source_id=%s", source_id
         )
-        _rollback_source(source_id, save_path)
+        _rollback_source(source_id, file_path)
         raise HTTPException(
             status_code=500,
             detail="ファイルの読み取りまたはベクトル化に失敗しました。ソースは登録されていません",
@@ -441,19 +446,18 @@ def _safe_download_name(raw_name: object, fallback: str) -> str:
         これをヘッダに載せる際、改行が混ざるとヘッダを分割して別のヘッダを
         差し込まれる恐れがある。
 
-        Starlette の FileResponse は filename を urllib.parse.quote に通し、
-        エンコード結果が元と変わる場合は RFC5987 形式（filename*=utf-8''...）に
-        切り替える。改行・ダブルクォート・非ASCIIはすべてパーセントエンコードされるため、
-        ヘッダインジェクション自体はライブラリ側で防がれている（確認済み）。
+        実際のエンコードは build_content_disposition が行う（quote に通し、
+        変化した場合は RFC5987 形式に切り替える）ので、改行・ダブルクォート・
+        非ASCIIはそこでパーセントエンコードされる。
 
         ただし '/' は quote の既定で素通りするため、'a/b.pdf' のような値は
         filename="a/b.pdf" とディレクトリ区切りを含んだまま提示されてしまう。
         表示名として不適切なので、ここで区切り文字と制御文字を落としておく。
-        ライブラリの実装に安全性を全面的に預けない、という意味の多層防御でもある。
+        エンコード側の実装に安全性を全面的に預けない、という意味の多層防御でもある。
 
     注意:
-        この関数が返すのは「見せる名前」だけで、実際に読むファイルのパスとは無関係。
-        パスは build_safe_upload_path が別に組み立てる。
+        この関数が返すのは「見せる名前」だけで、実際に読む保存先の名前とは無関係。
+        保存先の名前は app/upload_paths.py の組み立て関数が別に作る。
     """
     # '/' と '\' の両方を区切りとみなし、最後の要素だけを表示名として使う
     name = re.split(r"[/\\]", str(raw_name))[-1]
@@ -468,6 +472,47 @@ def _safe_download_name(raw_name: object, fallback: str) -> str:
     return name
 
 
+def build_content_disposition(filename: str) -> str:
+    """ダウンロード時の Content-Disposition ヘッダの値を組み立てて返す。
+
+    入力:
+        filename … ブラウザに提示したい表示名（_safe_download_name を通した値）
+
+    出力:
+        ヘッダに載せる文字列
+        例: 'attachment; filename="report.pdf"'
+            "attachment; filename*=utf-8''%E5%B0%B1%E6%A5%AD%E8%A6%8F%E5%89%87.txt"
+
+    なぜ自前で組み立てるのか:
+        以前はローカルファイルを FileResponse で返しており、このヘッダの組み立ては
+        Starlette が担っていた。保存先がGCSに変わり StreamingResponse を使うため、
+        同じ役割の処理をこちらに持つ必要がある。
+
+    どうやって安全性を保つか（ヘッダインジェクション対策）:
+        Starlette の FileResponse と同じ方式をそのまま使う。
+        1. 表示名を urllib.parse.quote に通す
+        2. エンコード結果が元と変わったなら、値に「そのままヘッダに置けない文字」が
+           含まれていたということなので、RFC5987 形式（filename*=utf-8''...）で
+           エンコード済みの文字列だけを載せる
+        3. 変わらなかったなら、ASCIIの安全な文字だけの名前なので filename="..." で載せる
+
+        quote は改行(\\r \\n)・ダブルクォート・非ASCIIをすべてパーセントエンコードする。
+        つまり「ヘッダを分割する」「値を閉じて別の属性を差し込む」に使える文字は、
+        必ず 2 の経路に入ってエンコードされ、生のままヘッダへは出られない。
+
+        なお値が変わらない 3 の経路に入るのは、quote が素通しする文字
+        （英数字と _.-~/ の一部）だけで構成された名前に限られる。
+        '/' は _safe_download_name が先に落としているので、ここには届かない。
+    """
+    quoted = quote(filename)
+
+    # エンコードで値が変わった＝そのままヘッダに置けない文字が含まれていた
+    if quoted != filename:
+        return f"attachment; filename*=utf-8''{quoted}"
+
+    return f'attachment; filename="{filename}"'
+
+
 @router.get("/{source_id}/download")
 async def download_source(source_id: int, token: dict = Depends(require_admin)):
     """登録済みソースの実ファイルをダウンロードさせる（社長専用）。
@@ -477,19 +522,29 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
         token     … require_admin が返すログイン情報（社長でなければ403で弾かれている）
 
     出力:
-        ファイルの中身（FileResponse）。ブラウザには元のファイル名で保存させる。
+        ファイルの中身（StreamingResponse）。ブラウザには元のファイル名で保存させる。
 
     エラー:
         403 … 社員がアクセスした場合（require_admin が投げる）
         400 … URLソースを指定した場合（実ファイルが存在しないため）
-        404 … ソースが無い / 保存パスが想定形式でない / 実ファイルが見つからない
+        404 … ソースが無い / 保存パスが想定形式でない / 実体が見つからない
 
     処理:
         1. source_id でDBを引く（無ければ404）
         2. URLソースを弾く
-        3. file_path から安全なパスを組み立て直す
-        4. 実ファイルの存在を確認する
-        5. FileResponse で返す
+        3. file_path が保存名の生成規則に合うか検証する
+        4. 実体の存在を確認する
+        5. ストレージから少しずつ読み出して返す
+
+    なぜ署名付きURLではなくサーバー経由で配信するのか（権限ルール）:
+        署名付きURLは、URLを持っている人ならアプリを通さずにファイルを取得できる。
+        そうなると require_admin の判定を通らずに個別ソース（他人の評価・給与など）を
+        落とせてしまい、CLAUDE.md の権限ルールと噛み合わない。
+        サーバー経由なら、毎回この関数の権限チェックを必ず通る。
+
+    なぜ一括ではなく少しずつ返すのか:
+        ファイルは最大50MB。全体をメモリに載せてから返すと、
+        同時にダウンロードが重なったときにメモリを圧迫する。
 
     なぜURLソースを明示的に弾くのか:
         URLソースの file_path には、社長が入力したURL文字列がそのまま入っている
@@ -497,13 +552,11 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
         file_type='url' の行を先に落とすことで、ユーザー入力そのものが
         パス処理へ流れ込む経路を入口で断つ。
 
-    なぜ file_path をそのまま開かないのか（パストラバーサル対策）:
-        DBの値であっても信用しない。build_safe_upload_path に通し、
-        「コード側の定数 UPLOAD_DIR」と「正規表現を通ったファイル名」だけから
-        パスを作り直す。検証を通らない値（形式の違う古いデータなど）は
+    なぜ file_path をそのまま渡さないのか（パストラバーサル対策）:
+        DBの値であっても信用しない。ストレージ層が app/upload_paths.py の
+        組み立て関数に通し、「コード側の定数」と「正規表現を通ったファイル名」だけから
+        保存先の名前を作り直す。検証を通らない値（形式の違う古いデータなど）は
         ValueError になるので、その場合は404として扱う。
-        なお delete_source は現状 file_path を直接 Path に渡しているが、
-        そちらの整理は本Issueの対象外（別Issueで扱う）。
     """
     conn = get_connection()
     row = conn.execute(
@@ -519,9 +572,11 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
     if row["file_type"] == "url":
         raise HTTPException(status_code=400, detail="URLソースはダウンロードできません")
 
-    # DBの値を信用せず、検証を通った要素だけからパスを組み立て直す
+    # DBの値を信用せず、保存名の生成規則に合うかをここで確かめる。
+    # 通った名前は、表示名が使えなかったときの代替名としても使う
     try:
-        safe_path = build_safe_upload_path(row["file_path"])
+        safe_name = sanitize_upload_name(row["file_path"])
+        file_exists = storage.exists(row["file_path"])
     except ValueError:
         # 保存名の生成規則に合わない＝形式の違う古いデータや壊れた行。
         # 利用者から見れば「取り出せるファイルが無い」ので404で返す。
@@ -531,18 +586,20 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
         )
         raise HTTPException(status_code=404, detail="ファイルが見つかりません")
 
-    # DBに行はあるが実ファイルが消えている場合（手動削除など）
-    if not safe_path.is_file():
+    # DBに行はあるが実体が消えている場合（手動削除など）
+    if not file_exists:
         raise HTTPException(status_code=404, detail="ファイルが見つかりません")
 
-    # ブラウザに提示する名前は元のファイル名。実際に読むパスは safe_path で、
-    # 「見せる名前」と「ディスク上の名前」は最後まで分離したままにする。
+    # ブラウザに提示する名前は元のファイル名。実際に読む先は storage が決めるので、
+    # 「見せる名前」と「保存先の名前」は最後まで分離したままにする。
     # media_type も file_name からの推測ではなく file_type の定数表から引く
     # （表示名に拡張子が無い場合でも正しい種別で返すため）
-    return FileResponse(
-        path=safe_path,
+    download_name = _safe_download_name(row["file_name"], safe_name)
+
+    return StreamingResponse(
+        storage.open_stream(row["file_path"]),
         media_type=MEDIA_TYPE_BY_TYPE.get(row["file_type"], "application/octet-stream"),
-        filename=_safe_download_name(row["file_name"], safe_path.name),
+        headers={"content-disposition": build_content_disposition(download_name)},
     )
 
 
@@ -553,7 +610,7 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
     処理:
         1. 対象のソースがあるか確認する（無ければ404）
         2. Qdrantから、そのソース由来のチャンクを削除する
-        3. 実ファイルを削除する（URLの場合はファイルが無いのでスキップ）
+        3. 保存した実体を削除する（URLの場合は実体が無いのでスキップ）
         4. sources テーブルから削除する
 
     なぜQdrantを先に消すのか:
@@ -561,6 +618,12 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
         消したはずの資料をAIが参照し続ける。しかもDBから消えているので、
         どのsource_idを消せばいいか追跡できなくなる。
         逆にQdrantを先に消せば、途中で失敗してもDBに行が残るので、削除をやり直せる。
+        実体の削除も同じ理由でDBより先に行う。
+
+    なぜ file_path を直接 Path に渡さないのか（パストラバーサル対策）:
+        以前はここだけ検証なしで Path(row["file_path"]) を作って unlink していた。
+        削除は「消す」操作なので、想定外のパスが渡ると別のファイルを消しうる。
+        ストレージ層を通すことで、読み出しと同じ検証（保存名の生成規則）を必ず経る。
     """
     conn = get_connection()
     row = conn.execute("SELECT * FROM sources WHERE source_id = ?", (source_id,)).fetchone()
@@ -585,11 +648,28 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
             detail="ベクトルの削除に失敗しました。ソースは削除されていません",
         )
 
-    # ファイルの場合は実ファイルも削除する
+    # ファイルの場合は保存した実体も削除する（URLは実体が無いのでスキップ）
     if row["file_type"] != "url":
-        file_path = Path(row["file_path"])
-        if file_path.exists():
-            file_path.unlink()
+        try:
+            storage.delete(row["file_path"])
+        except ValueError:
+            # 保存名の生成規則に合わない＝形式の違う古いデータや壊れた行。
+            # 何を消せばよいか特定できないので、実体の削除は諦めてDBの行だけ消す。
+            # ここで止めてしまうと、その行を二度と削除できなくなる
+            logger.warning(
+                "保存パスが想定の形式ではないため実体の削除をスキップします source_id=%s",
+                _sanitize_for_log(source_id),
+            )
+        except Exception:
+            # 通信エラーなど。DBの行を残して再実行できるようにする
+            # （行を消してしまうと、どの実体が残っているか追跡できなくなる）
+            logger.exception(
+                "ファイルの削除に失敗しました source_id=%s", _sanitize_for_log(source_id)
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="ファイルの削除に失敗しました。ソースは削除されていません",
+            )
 
     # 最後にDBの行を削除する
     conn = get_connection()

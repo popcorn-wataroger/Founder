@@ -19,7 +19,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import database
+from app import database, storage, upload_paths
 from app.main import app
 from app.routers import sources_router
 from app.routers.auth_router import require_admin
@@ -31,10 +31,18 @@ def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path
 
     出力:
         テスト用の uploads ディレクトリのパス（この中にだけ保存されるはず）
+
+    補足:
+        保存先の判断は app/storage.py が持っているので、そこを
+        「バケット未設定 かつ テスト環境」に固定してローカル保存の経路に倒す。
+        実際のパスを組み立てるのは app/upload_paths.py の UPLOAD_DIR なので、
+        向け直すのはそちら（storage は自分では持っていない）。
     """
     # 保存先を tmp_path 配下に向ける
     test_upload_dir = tmp_path / "uploads"
-    monkeypatch.setattr(sources_router, "UPLOAD_DIR", test_upload_dir)
+    monkeypatch.setattr(upload_paths, "UPLOAD_DIR", test_upload_dir)
+    monkeypatch.setattr(storage, "GCS_BUCKET_NAME", "")
+    monkeypatch.setattr(storage, "APP_ENV", "test")
 
     # DBも使い捨てのファイルに向け、テーブルを作っておく
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")

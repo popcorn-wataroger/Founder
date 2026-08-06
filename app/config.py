@@ -73,3 +73,13 @@ GEMINI_API_KEY: Final[str] = os.getenv("GEMINI_API_KEY", "")
 # Qdrant（ベクトルDB）の接続情報。値は .env から読み込む（コードに直書きしない）
 QDRANT_URL: Final[str] = os.getenv("QDRANT_URL", "")
 QDRANT_API_KEY: Final[str] = os.getenv("QDRANT_API_KEY", "")
+
+# Google Cloud Storage のバケット名。
+# 設定されていればGCSへ、空ならローカルの UPLOAD_DIR へ保存する
+# （どちらを使うかの判断は app/storage.py に集約している）。
+#
+# 認証情報（GOOGLE_APPLICATION_CREDENTIALS）をここで読まない理由:
+#     google-cloud-storage のSDKが同名の環境変数を自分で読む。
+#     config でも読むと「正解が2箇所にある」状態になり、片方だけ変えたときにずれる。
+#     .env.example には引き続き記載しておき、設定する場所だけ伝える。
+GCS_BUCKET_NAME: Final[str] = os.getenv("GCS_BUCKET_NAME", "")
