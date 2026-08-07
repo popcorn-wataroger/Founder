@@ -75,16 +75,19 @@ def load_secrets_into_env() -> None:
     for name in SECRET_NAMES:
         os.environ[name] = fetch_secret(client, name)
 
-    # 値そのものは絶対に出さない。出してよいのは「どれを取得したか」だけ。
+    # 値そのものは絶対に出さない。出してよいのは「何件取得できたか」だけ。
     #
-    # ループ内で print(f"{name}: 取得しました") と書かない理由:
-    # CodeQL(py/clear-text-logging-sensitive-data) はデータの流れを追うため、
-    # fetch_secret に渡した name を「機密に関係する値」として汚染扱いにする。
-    # 実際に出力しているのは名前と固定文字列だけだが、汚染された変数を print
-    # する形になるので検出される。
-    # ループの外でモジュール定数 SECRET_NAMES から直接組み立てれば、
-    # 汚染された変数を経由しないため、意図と検出結果が一致する。
-    print(f"取得しました: {', '.join(SECRET_NAMES)}")
+    # シークレット名を出力に含めない理由:
+    # CodeQL(py/clear-text-logging-sensitive-data) はデータの流れを追う。
+    # SECRET_NAMES は定数だが fetch_secret() に渡す値の供給元であるため、
+    # 「機密に関係する値」として汚染マークが付く。名前を print すると、
+    # 実際に出しているのが名前だけでも検出対象になる。
+    # len() の結果は整数なので、文字列としての汚染は伝播しない。
+    #
+    # 動作確認には「4件取得できた」ことが分かれば十分。
+    # 途中で失敗した場合は、どのシークレットで止まったかを
+    # fetch_secret() のエラーメッセージが持っている。
+    print(f"{len(SECRET_NAMES)} 件のシークレットを取得しました")
 
 
 def main() -> int:

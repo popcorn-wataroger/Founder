@@ -108,7 +108,7 @@ uv run python scripts/dev.py
 `scripts/dev.py` は次の順に動きます。
 
 1. Secret Manager から4件（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）の最新バージョンを取得する
-2. 取得した値を `os.environ` に入れる（**値そのものは出力しません。**出るのは `取得しました: JWT_SECRET_KEY, GEMINI_API_KEY, QDRANT_URL, QDRANT_API_KEY` という名前だけの1行です）
+2. 取得した値を `os.environ` に入れる（**値もシークレット名も出力しません。**出るのは `4 件のシークレットを取得しました` という件数だけの1行です）
 3. `APP_ENV=local` を設定する
 4. `os.execvp` で自身のプロセスを `uv run uvicorn app.main:app --reload` に置き換える
 
