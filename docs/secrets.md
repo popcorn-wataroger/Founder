@@ -116,11 +116,43 @@ uv run python scripts/dev.py
 
 http://localhost:8000 を開き、EMP001（社員画面）と ADMIN（管理者画面）でログインできることを確認します。
 
-Secret Manager を使わずに起動したいとき（オフライン時など）は、これまでどおり次でも起動できます。この場合は `.env` の値がそのまま使われます。
+### Secret Manager を使わずに起動する場合（オフライン時など）
+
+これまでどおり、次のコマンドでも起動できます。
 
 ```bash
 uv run uvicorn app.main:app --reload
 ```
+
+ただし**この起動方法では Secret Manager の値は一切注入されません。**`scripts/dev.py` を通さないため、アプリが読むのは `.env`（と、すでにシェルに設定済みの環境変数）だけです。
+
+そのため、手順1で機密情報を空のままにした人がこのコマンドを使う場合は、**事前に `.env` へ次の3つを手で書いておく必要があります。**
+
+| 変数 | 未設定だと壊れる機能 |
+|---|---|
+| `GEMINI_API_KEY` | AIの回答生成（チャット） |
+| `QDRANT_URL` | ソース検索（接続先が無い） |
+| `QDRANT_API_KEY` | ソース検索（認証できない） |
+
+値は Secret Manager のコンソール（[このプロジェクトのシークレット一覧](https://console.cloud.google.com/security/secret-manager?project=notebooklm-482403)）で確認できます。オフラインで作業する予定があるなら、**オンラインのうちに `.env` へ書いておいてください。**書いた `.env` は commit されません（`.gitignore` 済み）。
+
+`JWT_SECRET_KEY` だけは空でも問題ありません。`APP_ENV=local` のときは開発用の既定値が使われます（本番相当では起動が止まります。「[APP_ENV の扱い](#app_env-の扱い重要)」を参照）。
+
+**未設定のまま起動するとどうなるか**
+
+`app/config.py` はこの3つが空でも起動を止めません。しかも未設定を知らせる警告は**本番相当の環境（`APP_ENV` が `local` / `test` 以外）でしか出ません。**ローカル（`APP_ENV=local`）では警告すら出ないため、こうなります。
+
+1. `uv run uvicorn app.main:app --reload` は**成功する**（エラーも警告も出ない）
+2. http://localhost:8000 も開けて、ログインもできる
+3. チャットで質問を送った時点で**初めて失敗する**（回答が返らない／エラーになる）
+
+という順番になります。「起動できたから設定は足りている」とは判断できません。設定を書いたか自信が無いときは、値を表示せずに次で確認できます。
+
+```bash
+grep -c '^GEMINI_API_KEY=.\+' .env   # 1 なら設定あり、0 なら未設定
+```
+
+迷ったら `uv run python scripts/dev.py` を使ってください。こちらは値を取得できなければ**その場でエラーになって止まる**ので、壊れた状態のまま起動してしまうことがありません。
 
 ### なぜスクリプトの値が `.env` より優先されるのか
 
@@ -128,7 +160,7 @@ uv run uvicorn app.main:app --reload
 
 そのため優先順位はこうなります。
 
-```
+```text
 scripts/dev.py が入れた値（Secret Manager）  >  .env に書いた値
 ```
 
