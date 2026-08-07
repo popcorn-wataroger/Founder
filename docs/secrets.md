@@ -12,12 +12,19 @@ APIキーや署名鍵などの機密情報を、ローカル開発と本番で�
 
 | 環境 | 値の供給元 | アプリ側の読み方 |
 |---|---|---|
-| ローカル開発 | `.env` ファイル | `os.getenv()` |
+| ローカル開発 | Google Secret Manager → `scripts/dev.py` が環境変数に入れる | `os.getenv()` |
 | 本番（Cloud Run） | Google Secret Manager → 環境変数としてマウント | `os.getenv()`（同じ） |
 
 Cloud Run はデプロイ設定で「このシークレットをこの環境変数に入れる」と指定でき、コンテナ起動時にGCP側が値を注入します。そのためアプリ側に Secret Manager のライブラリは不要で、読み込み口は `app/config.py` の1か所だけです。
 
+ローカルも同じ形に揃えるため、起動前に値を環境変数へ入れる `scripts/dev.py` を用意しています。**`app/config.py` には Secret Manager のクライアントを入れません。**理由は3つです。
+
+1. 本番では Cloud Run が環境変数としてマウントするため、そのコードパスは本番で一度も実行されない
+2. 起動のたびにネットワークI/Oが入り、オフラインで開発できなくなる
+3. 「ローカルも本番も読み方は同じ（`os.getenv()` だけ）」という設計が崩れる
+
 読み込みを担当しているファイル: `app/config.py`
+ローカルで値を供給するファイル: `scripts/dev.py`
 
 ---
 
@@ -64,6 +71,8 @@ Cloud Run はデプロイ設定で「このシークレットをこの環境変�
 
 ## ローカル開発の手順
 
+機密情報の「正解」は Secret Manager に置いてあるので、ローカルでもそこから取得します。手で `.env` に値を書き写す必要はありません。
+
 ### 1. `.env` を用意する
 
 ```bash
@@ -72,27 +81,73 @@ cp .env.example .env
 
 `.env` は `.gitignore` に入っているため commit されません。
 
-### 2. 値を入れる
+機密ではない設定（`APP_ENV` / `APP_DEBUG` / `QDRANT_COLLECTION` / `GCS_BUCKET_NAME` など）はここに書きます。`APP_ENV=local` は `.env.example` に入っているので、消さないでください。
 
-| 変数 | 入手先 |
-|---|---|
-| `GEMINI_API_KEY` | Google AI Studio で発行 |
-| `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant Cloud のダッシュボード |
-| `JWT_SECRET_KEY` | 下記コマンドで自分用に生成（空のままでも起動する） |
+機密情報（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）は、次の手順2・3で Secret Manager から取得するため、**空のままで構いません。**
+
+### 2. ADC（アプリケーションデフォルト認証情報）を設定する
+
+初回だけ実行します。
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+gcloud auth application-default login
 ```
 
-`APP_ENV=local` は `.env.example` に入っているので、消さないでください。
+これは `gcloud auth login`（`gcloud` コマンド自身のログイン）とは**別枠**の操作です。Python の SDK が使う認証情報をローカルに用意します。これをしないと SDK は認証情報を見つけられず、`scripts/dev.py` が「GCP の認証情報が見つかりません」で終了します。
+
+> **先に確認すること:** 環境変数 `GOOGLE_APPLICATION_CREDENTIALS` に**存在しないファイルのパス**が入っていないか。入っていると SDK は ADC よりそちらを優先して読みにいき、ファイルが無いため認証に失敗します。ADC を使う場合はこの変数を空にしておきます（`.env.example` の説明を参照）。
+
+自分のアカウントに、対象シークレットを読む権限（`roles/secretmanager.secretAccessor`）が必要です。権限が無い場合は `scripts/dev.py` が「読む権限がありません」で終了します。
 
 ### 3. 起動して確認する
+
+```bash
+uv run python scripts/dev.py
+```
+
+`scripts/dev.py` は次の順に動きます。
+
+1. Secret Manager から4件（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）の最新バージョンを取得する
+2. 取得した値を `os.environ` に入れる（**値そのものは出力しません。**出るのは `JWT_SECRET_KEY: 取得しました` のような行だけです）
+3. `APP_ENV=local` を設定する
+4. `os.execvp` で自身のプロセスを `uv run uvicorn app.main:app --reload` に置き換える
+
+`os.execvp` はプロセスを**新しく作らず置き換える**ので、`os.environ` に入れた値はそのまま uvicorn に引き継がれ、`Ctrl+C` も uvicorn に直接届きます。
+
+http://localhost:8000 を開き、EMP001（社員画面）と ADMIN（管理者画面）でログインできることを確認します。
+
+Secret Manager を使わずに起動したいとき（オフライン時など）は、これまでどおり次でも起動できます。この場合は `.env` の値がそのまま使われます。
 
 ```bash
 uv run uvicorn app.main:app --reload
 ```
 
-http://localhost:8000 を開き、EMP001（社員画面）と ADMIN（管理者画面）でログインできることを確認します。
+### なぜスクリプトの値が `.env` より優先されるのか
+
+`app/config.py` が呼んでいる `load_dotenv()` は、**既定で `override=False`** です。つまり `.env` に書いてある値でも、**すでに環境変数として存在していれば上書きしません。**
+
+そのため優先順位はこうなります。
+
+```
+scripts/dev.py が入れた値（Secret Manager）  >  .env に書いた値
+```
+
+実際に確認できます（`.env` の `QDRANT_URL` を消さなくても、環境変数側が勝ちます）。
+
+```bash
+APP_ENV=local QDRANT_URL="EXPORTED-WINS" uv run python -c "from app import config; print(config.QDRANT_URL)"
+# => EXPORTED-WINS
+```
+
+この性質のおかげで、`.env` を消さずに上から被せる形で移行できます。既存の開発フローは壊れません。
+
+### 事前準備で入れたパッケージ
+
+```bash
+uv add --dev google-cloud-secret-manager
+```
+
+**dev 依存です。**本番（Cloud Run）は環境変数としてマウントされた値を読むだけなので、このライブラリを必要としません。本番のイメージに不要な依存を持ち込まないため、`[project].dependencies` には入れません。
 
 ---
 

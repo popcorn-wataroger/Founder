@@ -1,8 +1,11 @@
+import logging
 import os
 from pathlib import Path
 from typing import Final
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # ローカル開発では .env から環境変数を読み込む。
 # 本番（Cloud Run）では .env を置かず、Secret Manager のシークレットを
@@ -70,6 +73,50 @@ JWT_SECRET_KEY: Final[str] = _load_jwt_secret_key()
 # Gemini
 GEMINI_API_KEY: Final[str] = os.getenv("GEMINI_API_KEY", "")
 
-# Qdrant（ベクトルDB）の接続情報。値は .env から読み込む（コードに直書きしない）
+# Qdrant（ベクトルDB）の接続情報。値は環境変数から読み込む（コードに直書きしない）
 QDRANT_URL: Final[str] = os.getenv("QDRANT_URL", "")
 QDRANT_API_KEY: Final[str] = os.getenv("QDRANT_API_KEY", "")
+
+# 本番相当で未設定だと機能が動かなくなるが、起動は止めない設定。
+# JWT_SECRET_KEY と違い、漏洩ではなく可用性の問題なので扱いを分けている。
+_OPTIONAL_PROD_SETTINGS: Final[tuple[tuple[str, str], ...]] = (
+    ("GEMINI_API_KEY", GEMINI_API_KEY),
+    ("QDRANT_URL", QDRANT_URL),
+    ("QDRANT_API_KEY", QDRANT_API_KEY),
+)
+
+
+def _warn_missing_optional_settings() -> None:
+    """本番相当の環境で、未設定のまま起動する設定を警告する。
+
+    入力: モジュール変数 APP_ENV と _OPTIONAL_PROD_SETTINGS
+    処理: 本番相当かつ空の項目を集めて logger.warning を1回出す
+    出力: なし（副作用としてログが出るだけ。起動は止めない）
+
+    これらが空でもアプリは起動してしまう。そのため本番で Secret Manager の
+    マウントを忘れると「起動はするが検索と回答が全部失敗する」状態になり、
+    ログを見ても原因が設定漏れだと気づきにくい。
+    起動時点で名前を出しておけば、最初に見るログで原因にたどり着ける。
+
+    JWT_SECRET_KEY のように起動を止めないのは、これが漏洩ではなく可用性の
+    問題だから。止めると、一部機能のためにサービス全体が上がらなくなる。
+
+    値そのものは出さない（出すのは「未設定である」ことと変数名だけ）。
+    """
+    if APP_ENV in DEV_ENVS:
+        return
+
+    missing = [name for name, value in _OPTIONAL_PROD_SETTINGS if not value]
+    if not missing:
+        return
+
+    logger.warning(
+        "本番相当の環境で未設定の項目があります（APP_ENV=%s）: %s. "
+        "Secret Manager のシークレットが環境変数としてマウントされているか確認してください。"
+        "起動は続行しますが、該当する機能は失敗します。",
+        APP_ENV or "未設定",
+        ", ".join(missing),
+    )
+
+
+_warn_missing_optional_settings()
