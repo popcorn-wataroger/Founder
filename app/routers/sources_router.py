@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -141,7 +142,7 @@ def _sanitize_for_log(value: object) -> str:
     return str(value).replace("\r", "").replace("\n", "")
 
 
-def _rollback_source(source_id: int, file_path: str | None) -> None:
+async def _rollback_source(source_id: int, file_path: str | None) -> None:
     """ベクトル化に失敗したとき、DB登録とファイル保存を取り消す。
 
     入力:
@@ -161,6 +162,12 @@ def _rollback_source(source_id: int, file_path: str | None) -> None:
         保存先はローカルとは限らない（GCSにはパスではなくオブジェクト名がある）。
         「どこに保存されているか」は app/storage.py だけが知っていればよいので、
         ここでは storage が解釈できるキーを、そのまま storage.delete に渡す。
+
+    なぜ async にしているか:
+        storage.delete は同期関数で、GCS が保存先のときは中で通信する。
+        呼び出し元は async のルーターなので、そのまま呼ぶと通信を待つ間
+        イベントループが止まり、他のリクエストが待たされる。
+        run_in_threadpool で別スレッドへ逃がすため、この関数も async にしている。
     """
     # DBの登録を取り消す
     conn = get_connection()
@@ -182,7 +189,7 @@ def _rollback_source(source_id: int, file_path: str | None) -> None:
     #     手作業で消せるようにログへ file_path を残す。
     if file_path is not None:
         try:
-            storage.delete(file_path)
+            await run_in_threadpool(storage.delete, file_path)
         except Exception:
             # file_path はDB由来の値。ログ改行インジェクションを防ぐため必ず通す
             logger.exception(
@@ -306,8 +313,11 @@ async def upload_source(
 
     # 保存する。保存先がGCSかローカルかは storage が判断するので、ここでは意識しない。
     # 戻り値の file_path は、後で読み出すときに storage へ渡すキー（DBにも記録する）
+    # storage.save は同期関数で、GCS が保存先のときは中で通信する。
+    # async のルーターから直接呼ぶと通信待ちの間イベントループが止まるため、
+    # 別スレッドへ逃がす（他のリクエストの処理を止めない）
     try:
-        file_path = storage.save(save_name, contents)
+        file_path = await run_in_threadpool(storage.save, save_name, contents)
     except Exception:
         # ファイル名はユーザー入力なので、改行を落としてからログに渡す
         logger.exception(
@@ -362,7 +372,7 @@ async def upload_source(
         logger.exception(
             "ベクトル化に失敗しました。ソース登録を取り消します source_id=%s", source_id
         )
-        _rollback_source(source_id, file_path)
+        await _rollback_source(source_id, file_path)
         raise HTTPException(
             status_code=500,
             detail="ファイルの読み取りまたはベクトル化に失敗しました。ソースは登録されていません",
@@ -437,7 +447,7 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
         # 失敗したら、直前のDB登録を取り消して登録前の状態に戻す
         # URLは実ファイルを保存していないので save_path は None
         logger.exception("ベクトル化に失敗しました。URL登録を取り消します source_id=%s", source_id)
-        _rollback_source(source_id, None)
+        await _rollback_source(source_id, None)
         raise HTTPException(
             status_code=500,
             detail="URLの読み取りまたはベクトル化に失敗しました。ソースは登録されていません",
@@ -594,9 +604,11 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
 
     # DBの値を信用せず、保存名の生成規則に合うかをここで確かめる。
     # 通った名前は、表示名が使えなかったときの代替名としても使う
+    # storage.exists は同期関数で、GCS が保存先のときは中で通信する。
+    # async のルーターから直接呼ぶと通信待ちの間イベントループが止まるため、別スレッドへ逃がす
     try:
         safe_name = sanitize_upload_name(row["file_path"])
-        file_exists = storage.exists(row["file_path"])
+        file_exists = await run_in_threadpool(storage.exists, row["file_path"])
     except ValueError:
         # 保存名の生成規則に合わない＝形式の違う古いデータや壊れた行。
         # 利用者から見れば「取り出せるファイルが無い」ので404で返す。
@@ -670,8 +682,10 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
 
     # ファイルの場合は保存した実体も削除する（URLは実体が無いのでスキップ）
     if row["file_type"] != "url":
+        # storage.delete は同期関数で、GCS が保存先のときは中で通信する。
+        # async のルーターから直接呼ぶと通信待ちの間イベントループが止まるため、別スレッドへ逃がす
         try:
-            storage.delete(row["file_path"])
+            await run_in_threadpool(storage.delete, row["file_path"])
         except ValueError:
             # 保存名の生成規則に合わない＝形式の違う古いデータや壊れた行。
             # 何を消せばよいか特定できないので、実体の削除は諦めてDBの行だけ消す。
