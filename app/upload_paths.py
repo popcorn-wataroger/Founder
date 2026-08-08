@@ -96,7 +96,27 @@ def build_safe_upload_path(raw_path: str) -> Path:
 
     # 組み立てた結果が本当に UPLOAD_DIR の中か、最後にもう一度確かめる（多層防御）。
     # '..' やシンボリックリンクを解決した実体パスで比べる
-    if not safe_path.resolve().is_relative_to(UPLOAD_DIR.resolve()):
+    #
+    # CodeQL は raw_path 由来の値が resolve() に渡ったと見なすが、この行は
+    # 攻撃者の入力をパスに変える処理ではなく、むしろ**その逆の検査**にあたる。誤検知として抑制する。
+    #
+    # ここへ到達する時点で safe_path が安全な理由:
+    #     1つ上の行の safe_name は sanitize_upload_name を通っている。
+    #     同関数は Path(raw_path).name でディレクトリ部分（'../' や 'uploads/' や
+    #     Windows形式の区切り）を全て捨てたうえで、SAFE_FILE_NAME_PATTERN
+    #     （20桁タイムスタンプ + uuid4 + pdf/docx/pptx/txt）に fullmatch しない値を
+    #     ValueError で弾く。safe_path はその戻り値と定数 UPLOAD_DIR だけから
+    #     組み立てており、入力のディレクトリ部分は材料に入っていない。
+    #     つまり raw_path の汚染は、この行に届く前に断ち切られている。
+    #
+    # この行自体の役目:
+    #     将来 build_safe_upload_path の組み立て方が変わったときに、黙って穴が開くのを
+    #     防ぐための保険。通す側の検査ではなく、落とす側の検査なので抑制しても
+    #     防御が減ることはない。
+    #
+    # 検証: tests/test_storage.py の危険な保存パス8種 × 5操作のテストで、
+    #       UPLOAD_DIR の外にあるおとりファイルを読むことも消すこともできないことを確認済み。
+    if not safe_path.resolve().is_relative_to(UPLOAD_DIR.resolve()):  # codeql[py/path-injection]
         raise ValueError("unexpected file path")
 
     return safe_path

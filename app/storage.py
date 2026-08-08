@@ -168,7 +168,22 @@ def read_bytes(raw_path: str) -> bytes:
         blob_bytes: bytes = _get_bucket().blob(build_safe_object_name(raw_path)).download_as_bytes()
         return blob_bytes
 
-    return build_safe_upload_path(raw_path).read_bytes()
+    # CodeQL は raw_path（DB由来＝信用しない値）が open 相当の sink に届いたと見なすが、
+    # 実際には raw_path そのものはパスの材料になっていない。誤検知として抑制する。
+    #
+    # 安全性を担保している関数:
+    #     app/upload_paths.py の build_safe_upload_path
+    #       → sanitize_upload_name が Path(raw_path).name でディレクトリ部分を全て捨て、
+    #         SAFE_FILE_NAME_PATTERN（20桁タイムスタンプ + uuid4 + pdf/docx/pptx/txt）に
+    #         fullmatch しない値は ValueError で弾く
+    #       → 返すパスの材料は「定数 UPLOAD_DIR」と「検証を通ったファイル名」の2つだけで、
+    #         入力のディレクトリ部分は一切使わない（作り直しであって検査ではない）
+    #       → 最後に resolve() + is_relative_to() で UPLOAD_DIR 配下かを再確認する
+    #
+    # 検証: tests/test_storage.py の test_ローカル_危険な保存パスは読み書きできない が
+    #       危険な保存パス8種 × 5操作（save/read_bytes/open_stream/exists/delete）で
+    #       ValueError になること、おとりファイルが無傷であることを確かめている。
+    return build_safe_upload_path(raw_path).read_bytes()  # codeql[py/path-injection]
 
 
 def open_stream(raw_path: str) -> Iterator[bytes]:
