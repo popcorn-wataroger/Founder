@@ -24,12 +24,13 @@
 
 ```bash
 uv sync
-cp .env.example .env
-# .env を編集して GEMINI_API_KEY 等を設定
-uv run uvicorn app.main:app --reload
+gcloud auth application-default login  # 初回のみ
+uv run python scripts/dev.py
 ```
 
 http://localhost:8000 にアクセス。
+
+機密情報（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）は `scripts/dev.py` が Google Secret Manager から取得して環境変数に入れるため、`.env` に手で書く必要はありません。詳細は `docs/secrets.md` を参照。
 
 ## デモ用ログイン
 
@@ -45,3 +46,4 @@ http://localhost:8000 にアクセス。
 - 詳細な要件定義・データモデル・画面仕様は `CLAUDE.md` を参照。
 - GitHub の運用ルールは `docs/github-workflow.md` を参照。
 - UI の確認方法は `docs/ui-review.md` を参照。
+- 機密情報（シークレット）の扱いは `docs/secrets.md` を参照。

@@ -32,13 +32,15 @@ Cloud Run はデプロイ設定で「このシークレットをこの環境変�
 
 | 変数 | 用途 | ローカル | 本番 |
 |---|---|---|---|
-| `JWT_SECRET_KEY` | ログイントークンの署名鍵 | 任意（未設定なら開発用の既定値） | **必須**（未設定なら起動しない） |
-| `GEMINI_API_KEY` | Gemini API の認証 | 必要 | 必要 |
-| `QDRANT_URL` | Qdrant の接続先 | 必要 | 必要 |
-| `QDRANT_API_KEY` | Qdrant Cloud の認証 | 必要 | 必要 |
-| `APP_ENV` | 実行環境の識別子 | `local` | `production` など |
+| `JWT_SECRET_KEY` | ログイントークンの署名鍵 | `scripts/dev.py` が取得 | **必須**（未設定なら起動しない） |
+| `GEMINI_API_KEY` | Gemini API の認証 | `scripts/dev.py` が取得 | 必要 |
+| `QDRANT_URL` | Qdrant の接続先 | `scripts/dev.py` が取得 | 必要 |
+| `QDRANT_API_KEY` | Qdrant Cloud の認証 | `scripts/dev.py` が取得 | 必要 |
+| `APP_ENV` | 実行環境の識別子 | `scripts/dev.py` が `local` を設定 | `production` など |
 | `GCS_BUCKET_NAME` | GCSバケット名 | — | 機密ではない。環境変数のままでよい |
 | `DATABASE_URL` | Cloud SQL の接続情報 | — | Issue #65 で導入予定 |
+
+上の4つが Secret Manager の管理対象です。`scripts/dev.py` の `SECRET_NAMES` に列挙されており、シークレット名と環境変数名は同じに揃えています。
 
 ---
 
@@ -48,7 +50,7 @@ Cloud Run はデプロイ設定で「このシークレットをこの環境変�
 
 未設定を「ローカル扱い」にしないのは、本番で `APP_ENV` を渡し忘れたときに開発用の鍵で起動が通ってしまうからです。設定漏れは安全な側（起動しない）に倒します。
 
-- ローカル: `.env` の `APP_ENV=local`
+- ローカル: `scripts/dev.py` が起動前に `APP_ENV=local` を設定する
 - CI: `.github/workflows/ci.yml` の `APP_ENV: test`
 
 どちらも明示的に指定しているため、この扱いによる影響は受けません。
@@ -71,21 +73,17 @@ Cloud Run はデプロイ設定で「このシークレットをこの環境変�
 
 ## ローカル開発の手順
 
-機密情報の「正解」は Secret Manager に置いてあるので、ローカルでもそこから取得します。手で `.env` に値を書き写す必要はありません。
+機密情報の「正解」は Secret Manager に置いてあるので、ローカルでもそこから取得します。手で `.env` に値を書き写す必要はありません。**`.env` を作らなくても起動できます。**
 
-### 1. `.env` を用意する
+手順は次の2つだけです。
 
 ```bash
-cp .env.example .env
+uv sync
+gcloud auth application-default login  # 初回のみ
+uv run python scripts/dev.py
 ```
 
-`.env` は `.gitignore` に入っているため commit されません。
-
-機密ではない設定（`APP_ENV` / `APP_DEBUG` / `QDRANT_COLLECTION` / `GCS_BUCKET_NAME` など）はここに書きます。`APP_ENV=local` は `.env.example` に入っているので、消さないでください。
-
-機密情報（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）は、次の手順2・3で Secret Manager から取得するため、**空のままで構いません。**
-
-### 2. ADC（アプリケーションデフォルト認証情報）を設定する
+### 1. ADC（アプリケーションデフォルト認証情報）を設定する
 
 初回だけ実行します。
 
@@ -99,7 +97,7 @@ gcloud auth application-default login
 
 自分のアカウントに、対象シークレットを読む権限（`roles/secretmanager.secretAccessor`）が必要です。権限が無い場合は `scripts/dev.py` が「読む権限がありません」で終了します。
 
-### 3. 起動して確認する
+### 2. 起動して確認する
 
 ```bash
 uv run python scripts/dev.py
@@ -116,6 +114,14 @@ uv run python scripts/dev.py
 
 http://localhost:8000 を開き、EMP001（社員画面）と ADMIN（管理者画面）でログインできることを確認します。
 
+### `.env` は必要か
+
+この手順では作りません。`app/config.py` が読む環境変数は `APP_ENV` / `JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` の5つで、すべて `scripts/dev.py` が用意するためです。
+
+`.env.example` にはこの5つ以外の項目（`APP_DEBUG` / `QDRANT_COLLECTION` / `GCS_BUCKET_NAME` / `DATABASE_URL`）もありますが、**現時点ではどれもコードから読まれていません。**将来使う予定があるため名前だけ残してあります。設定しても現在の挙動は変わりません。
+
+`.env` が必要になるのは、次の「Secret Manager を使わずに起動する場合」だけです。
+
 ### Secret Manager を使わずに起動する場合（オフライン時など）
 
 これまでどおり、次のコマンドでも起動できます。
@@ -126,13 +132,18 @@ uv run uvicorn app.main:app --reload
 
 ただし**この起動方法では Secret Manager の値は一切注入されません。**`scripts/dev.py` を通さないため、アプリが読むのは `.env`（と、すでにシェルに設定済みの環境変数）だけです。
 
-そのため、手順1で機密情報を空のままにした人がこのコマンドを使う場合は、**事前に `.env` へ次の3つを手で書いておく必要があります。**
+そのため、この起動方法を使う場合は**事前に `.env` を作り、手で値を書いておく必要があります。**
 
-| 変数 | 未設定だと壊れる機能 |
+```bash
+cp .env.example .env
+```
+
+| 変数 | 書かないとどうなるか |
 |---|---|
-| `GEMINI_API_KEY` | AIの回答生成（チャット） |
-| `QDRANT_URL` | ソース検索（接続先が無い） |
-| `QDRANT_API_KEY` | ソース検索（認証できない） |
+| `APP_ENV` | **起動に失敗する。**`local` 以外（未設定を含む）は本番相当として扱われ、`JWT_SECRET_KEY` が空の時点で `RuntimeError` になる。`.env.example` に `APP_ENV=local` が入っているので、`cp` したままなら満たされる |
+| `GEMINI_API_KEY` | AIの回答生成（チャット）が失敗する |
+| `QDRANT_URL` | ソース検索が失敗する（接続先が無い） |
+| `QDRANT_API_KEY` | ソース検索が失敗する（認証できない） |
 
 値は Secret Manager のコンソール（[このプロジェクトのシークレット一覧](https://console.cloud.google.com/security/secret-manager?project=notebooklm-482403)）で確認できます。オフラインで作業する予定があるなら、**オンラインのうちに `.env` へ書いておいてください。**書いた `.env` は commit されません（`.gitignore` 済み）。
 
@@ -140,7 +151,7 @@ uv run uvicorn app.main:app --reload
 
 **未設定のまま起動するとどうなるか**
 
-`app/config.py` はこの3つが空でも起動を止めません。しかも未設定を知らせる警告は**本番相当の環境（`APP_ENV` が `local` / `test` 以外）でしか出ません。**ローカル（`APP_ENV=local`）では警告すら出ないため、こうなります。
+`app/config.py` はこの3つ（`GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）が空でも起動を止めません。しかも未設定を知らせる警告は**本番相当の環境（`APP_ENV` が `local` / `test` 以外）でしか出ません。**ローカル（`APP_ENV=local`）では警告すら出ないため、こうなります。
 
 1. `uv run uvicorn app.main:app --reload` は**成功する**（エラーも警告も出ない）
 2. http://localhost:8000 も開けて、ログインもできる

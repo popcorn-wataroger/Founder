@@ -41,7 +41,7 @@ Issue の例:
 - 正しい入力時はこれまで通りログインできる
 
 ## 確認方法
-- `uv run uvicorn app.main:app --reload` で起動
+- `uv run python scripts/dev.py` で起動
 - 空欄でログインしてエラー表示を確認
 - `ADMIN` でログインできることを確認
 
@@ -88,7 +88,7 @@ uv sync
 アプリを起動して、変更した画面や機能を自分で確認します。
 
 ```bash
-uv run uvicorn app.main:app --reload
+uv run python scripts/dev.py
 ```
 
 確認すること:
@@ -155,7 +155,7 @@ PR を作る前に、必ず以下を確認します。
 ```bash
 git status
 uv sync
-uv run uvicorn app.main:app --reload
+uv run python scripts/dev.py
 ```
 
 チェック項目:
@@ -181,7 +181,7 @@ Closes #12
 - エラー表示の文言を調整
 
 ## 動作確認
-- `uv run uvicorn app.main:app --reload` で起動
+- `uv run python scripts/dev.py` で起動
 - ADMIN でログインできることを確認
 - 空欄の場合にエラーが表示されることを確認
 
