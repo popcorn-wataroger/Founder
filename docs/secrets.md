@@ -38,17 +38,26 @@ Cloud Run はデプロイ設定で「このシークレットをこの環境変�
 | `QDRANT_API_KEY` | Qdrant Cloud の認証 | `scripts/dev.py` が取得 | 必要 |
 | `APP_ENV` | 実行環境の識別子 | `scripts/dev.py` が `local` を設定 | `production` など |
 | `GCS_BUCKET_NAME` | GCSバケット名 | — | 機密ではない。環境変数のままでよい |
-| `DATABASE_URL` | Cloud SQL の接続情報 | 自分で環境変数に入れる | **Secret Manager 管理対象に加える予定**（未登録） |
+| `DATABASE_URL` | Cloud SQL の接続情報 | 自分で環境変数に入れる | **Secret Manager 管理対象**（登録済み） |
 
-上の4つが Secret Manager の管理対象です。`scripts/dev.py` の `SECRET_NAMES` に列挙されており、シークレット名と環境変数名は同じに揃えています。
+Secret Manager の管理対象は上の5つです。`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` の4つは `scripts/dev.py` の `SECRET_NAMES` に列挙されています。シークレット名と環境変数名は同じに揃えています。
 
-### DATABASE_URL の現状（Issue #65）
+### DATABASE_URL の現状（Issue #65 / #66）
 
-`DATABASE_URL` はパスワードを含むため、**将来 Secret Manager の管理対象に加えます。ただし現時点ではまだ登録していません。**登録は Issue #66（Cloud Run デプロイ）で、Cloud SQL インスタンスの接続情報が確定したタイミングで行います。
+`DATABASE_URL` はパスワードを含むため Secret Manager の管理対象です。**Issue #66（Cloud Run デプロイ）で登録済みで、バージョン1が有効です。**Cloud SQL インスタンスの接続情報が確定するまで登録できなかったため、他の4つより後になりました。
 
-そのため `scripts/dev.py` の `SECRET_NAMES` にもまだ追加していません。未登録のシークレットを列挙すると `fetch_secret()` が「Secret Manager に存在しません」で止まり、**ローカルの開発サーバーが起動できなくなる**ためです。
+登録されているのは **Cloud Run 用の接続URL**です。ホスト名の位置が空で、`host=` に Unix ソケットのパスを指定する形になっています。
 
-登録するまでのローカル開発では、自分で環境変数に入れてから起動します。
+```text
+postgresql://founder:<パスワード>@/founder?host=/cloudsql/notebooklm-482403:asia-northeast1:founder-db
+```
+
+**ただし `scripts/dev.py` の `SECRET_NAMES` にはまだ追加していません。**理由は2つあります。
+
+1. 登録されている値は Cloud Run 用の形式で、ローカル（`cloud-sql-proxy` 経由で `localhost:5432` に繋ぐ形）とは URL の形が違う。そのまま取得してもローカルでは使えない
+2. 追加するとローカルの起動手順が変わるため、動作確認をやり直す必要がある
+
+このため `SECRET_NAMES` への追加は別Issueとして扱います。ローカル開発では引き続き、自分で環境変数に入れてから起動します。
 
 ```bash
 export DATABASE_URL="postgresql://founder:<PASSWORD>@localhost:5432/founder"
@@ -267,10 +276,10 @@ uv add --dev google-cloud-secret-manager
 | `GEMINI_API_KEY` | 自動 | Google管理 | バージョン1が有効 |
 | `QDRANT_API_KEY` | 自動 | Google管理 | バージョン1が有効 |
 | `QDRANT_URL` | 自動 | Google管理 | バージョン1が有効 |
+| `DATABASE_URL` | 自動 | Google管理 | バージョン1が有効（Issue #66 で追加） |
 
 対象外にしたもの:
 
-- `DATABASE_URL` … **管理対象に加える予定だが、まだ登録していない。**登録は Issue #66（Cloud Run デプロイ）で行う（上の「[DATABASE_URL の現状](#database_url-の現状issue-65)」を参照）
 - `GCS_BUCKET_NAME` … 機密ではないため、環境変数のままにする
 - `OPENAI_API_KEY` … 本プロジェクトでは未使用のため登録しない
 

@@ -27,12 +27,20 @@ PROJECT_ID: Final[str] = "notebooklm-482403"
 # Secret Manager から取得して環境変数に入れる名前の一覧。
 # シークレット名と環境変数名はあえて同じにしている（対応表を持たずに済むため）。
 #
-# DATABASE_URL をまだ入れていない理由（Issue #65）:
-#     パスワードを含むため将来ここに加えるが、Secret Manager にまだ登録していない。
-#     未登録のまま列挙すると fetch_secret() が NotFound で RuntimeError を投げ、
-#     開発サーバーが起動できなくなる。
-#     登録は Issue #66（Cloud Run デプロイ）で行い、そのあとここに追加する。
-#     それまでローカルでは、起動前に自分で環境変数へ入れる（README.md を参照）。
+# DATABASE_URL をここに入れていない理由（Issue #65 / #66）:
+#     Secret Manager への登録は Issue #66（Cloud Run デプロイ）で完了しており、
+#     バージョン1が有効になっている。それでもこの一覧に加えていないのは、
+#     登録されている値が Cloud Run 用の形式だから。
+#
+#         登録値（Cloud Run）: postgresql://...@/founder?host=/cloudsql/<接続名>
+#         ローカルで必要な値  : postgresql://...@localhost:5432/founder
+#
+#     Cloud Run は Unix ソケット経由で繋ぐが、ローカルは cloud-sql-proxy が
+#     待ち受ける localhost へ繋ぐ。ここに加えて取得しても、ローカルでは接続できない。
+#
+#     ローカル用の値を別シークレットとして持たせる案もあるが、
+#     起動手順が変わって動作確認をやり直すことになるため、別Issueとして扱う。
+#     現状ローカルでは、起動前に自分で環境変数へ入れる（README.md を参照）。
 SECRET_NAMES: Final[tuple[str, ...]] = (
     "JWT_SECRET_KEY",
     "GEMINI_API_KEY",
