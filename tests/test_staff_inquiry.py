@@ -15,14 +15,14 @@
 外部サービスには繋がない:
     answer_question_stream（GeminiとQdrantを呼ぶ）を monkeypatch で差し替え、
     どんな引数で呼ばれたかを記録する。
-    DBも tmp_path の使い捨てファイルに差し替えて、本番の data/founder.db を汚さない。
+    DBはテスト用のPostgreSQL（DATABASE_URL で指定）を使い、
+    共通フィクスチャ temp_db がテストごとにテーブルを空にする。
 
 検索フィルタそのもの（共通＋対象社員の個別だけを見る）は
 tests/test_search_filter.py で別途固定している。
 """
 
 from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -36,14 +36,6 @@ from app.routers.auth_router import create_access_token
 # users.csv 上の想定: user_id=1 は管理者(ADMIN)、user_id=2 は社員(EMP001)
 ADMIN_USER_ID = "1"
 STAFF_USER_ID = "2"
-
-
-@pytest.fixture
-def temp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """本番の data/founder.db を汚さないよう、使い捨てのDBに差し替える。"""
-    monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
-    database.init_db()
-    yield
 
 
 class RecordedCall:

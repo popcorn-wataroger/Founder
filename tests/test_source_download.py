@@ -33,8 +33,8 @@ from app.routers.sources_router import _safe_download_name, build_content_dispos
 
 
 @pytest.fixture
-def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """本番の uploads/ と data/founder.db を汚さないよう、使い捨ての置き場に差し替える。
+def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_db: None) -> Iterator[Path]:
+    """本番の uploads/ を汚さないよう、使い捨ての置き場に差し替える。
 
     出力:
         テスト用の uploads ディレクトリのパス
@@ -46,16 +46,15 @@ def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path
 
         あわせて app/storage.py を「バケット未設定 かつ テスト環境」に固定し、
         ローカル保存の経路に倒す（GCSへ実通信させないため）。
+
+        DBの用意は共通フィクスチャ temp_db に任せている
+        （テスト用PostgreSQLのテーブルを空にしてから始める）。
     """
     test_upload_dir = tmp_path / "uploads"
     test_upload_dir.mkdir(parents=True)
     monkeypatch.setattr(upload_paths, "UPLOAD_DIR", test_upload_dir)
     monkeypatch.setattr(storage, "GCS_BUCKET_NAME", "")
     monkeypatch.setattr(storage, "APP_ENV", "test")
-
-    # DBも使い捨てのファイルに向け、テーブルを作っておく
-    monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
-    database.init_db()
 
     # 管理者チェックを通す（権限そのものを見るテストでは、この上書きを個別に外す）
     app.dependency_overrides[require_admin] = lambda: {"user_id": "ADMIN"}
@@ -88,14 +87,16 @@ def _insert_source(file_name: str, file_type: str, file_path: str) -> int:
         """
         INSERT INTO sources
             (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-        VALUES (?, ?, ?, 'common', NULL, '2026-01-01T00:00:00+00:00', 'ADMIN')
+        VALUES (%s, %s, %s, 'common', NULL, '2026-01-01T00:00:00+00:00', 'ADMIN')
+        RETURNING source_id
         """,
         (file_name, file_type, file_path),
     )
+    row = cursor.fetchone()
     conn.commit()
-    source_id = cursor.lastrowid
     conn.close()
-    assert source_id is not None
+    assert row is not None
+    source_id: int = row["source_id"]
     return source_id
 
 

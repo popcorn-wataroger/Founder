@@ -11,7 +11,6 @@
 """
 
 from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -33,14 +32,6 @@ def client() -> Iterator[TestClient]:
     app.dependency_overrides.clear()
 
 
-@pytest.fixture
-def temp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """本番の data/founder.db を汚さないよう、使い捨てのDBに差し替える。"""
-    monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
-    database.init_db()
-    yield
-
-
 def _insert_source(file_name: str, scope: str, owner_user_id: str | None, uploaded_at: str) -> None:
     """テスト用のソースを1件登録する（ベクトル化は通さず、DBに直接入れる）。"""
     conn = database.get_connection()
@@ -48,7 +39,7 @@ def _insert_source(file_name: str, scope: str, owner_user_id: str | None, upload
         """
         INSERT INTO sources
             (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-        VALUES (?, 'txt', ?, ?, ?, ?, '1')
+        VALUES (%s, 'txt', %s, %s, %s, %s, '1')
         """,
         (file_name, f"uploads/{file_name}", scope, owner_user_id, uploaded_at),
     )
@@ -60,7 +51,7 @@ def test_社員の基本情報が返る(client: TestClient, temp_db: None) -> No
     """EMP001（user_id=2）の基本情報が、想定どおりの項目で返る。
 
     最終ログインを user_logins テーブルから読むようになったため、
-    このテストも本番DBを触らないよう temp_db を使う。
+    このテストも空のテーブルから始められるよう temp_db を使う。
     """
     response = client.get("/api/admin/users/2")
 
