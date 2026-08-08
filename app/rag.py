@@ -43,22 +43,47 @@ GENERATION_FAILED_MESSAGE = (
 _client = genai.Client(api_key=GEMINI_API_KEY)
 
 
-def _build_prompt(question: str, chunks: list[str]) -> str:
-    """検索で得た関連チャンクと質問を組み合わせ、Geminiに渡すプロンプト文を作る。
+def _build_prompt(question: str, chunks: list[str], profile: str | None = None) -> str:
+    """参考情報と質問を組み合わせ、Geminiに渡すプロンプト文を作る。
 
     入力:
         question … ユーザーからの質問
-        chunks   … 質問に関連する社内文書のチャンク（1件以上ある前提）
+        chunks   … 質問に関連する社内文書のチャンク（0件のこともある）
+        profile  … 対象社員の基本情報（app.users.format_user_profile が作った文字列）。
+                   社員データ画面からの質問のときだけ渡す。通常のチャットでは None
 
     出力:
         Geminiに渡す1つの文字列プロンプト
 
     ねらい:
-        「渡した社内文書の範囲で答えて」と明示することで、
+        「渡した情報の範囲で答えて」と明示することで、
         AIが勝手な推測（ハルシネーション）で答えるのを抑える。
+
+    chunks と profile の両方を空にして呼んではいけない:
+        参考情報が1つも無い状態で生成させると、AIは自分の知識で答えを作ってしまう。
+        呼び出し元（answer_question / answer_question_stream）が、
+        どちらも空のときは生成せず定型メッセージで返すようにしている。
+
+    セクションを分けて渡す理由:
+        基本情報は社員マスタの値、社内文書はアップロードされた資料と、出どころが違う。
+        「=== 対象社員の基本情報 ===」と「=== 社内文書 ===」に分けておくと、
+        AIがどちらを根拠にしたか回答文の中で書き分けやすくなる。
+        また、片方しか無いときはそのセクションごと省けるので、
+        「空のセクション」を渡してAIを混乱させずに済む。
     """
-    # 各チャンクに番号を振って読みやすく並べる
-    context = "\n\n".join(f"【文書{i + 1}】\n{c}" for i, c in enumerate(chunks))
+    # 参考情報のセクションを、ある分だけ組み立てる（無いセクションは丸ごと省く）
+    sections = []
+
+    # 基本情報は社員マスタ由来なので、社内文書より先に置く（質問の主語になることが多いため）
+    if profile:
+        sections.append(f"=== 対象社員の基本情報 ===\n{profile}")
+
+    if chunks:
+        # 各チャンクに番号を振って読みやすく並べる
+        context = "\n\n".join(f"【文書{i + 1}】\n{c}" for i, c in enumerate(chunks))
+        sections.append(f"=== 社内文書 ===\n{context}")
+
+    reference = "\n\n".join(sections)
 
     # 「参考資料 → 質問 → 指示」の順に組み立てる
     #
@@ -75,8 +100,8 @@ def _build_prompt(question: str, chunks: list[str]) -> str:
     #   パーサーを複雑にする代わりに、生成側で連続した形にしてもらう。
     return (
         "あなたは社内向けのAIアシスタントです。"
-        "以下の社内文書だけを参考にして、質問に日本語で答えてください。"
-        "文書に書かれていない内容は、推測せず「資料には記載がありません」と伝えてください。\n\n"
+        "以下の参考情報だけを参考にして、質問に日本語で答えてください。"
+        "参考情報に書かれていない内容は、推測せず「資料には記載がありません」と伝えてください。\n\n"
         "回答は次の記法だけを使ってください。"
         "太字は **文字**、箇条書きは行頭に「- 」、番号付きの列挙は行頭に「1. 」、"
         "見出しは行頭に「### 」を付けます。"
@@ -84,7 +109,7 @@ def _build_prompt(question: str, chunks: list[str]) -> str:
         "番号付きリストを使うときは、項目と項目の間に段落や空行を挟まず、"
         "番号の行を続けて並べてください。"
         "各項目の説明は、その項目の行の中に含めてください。\n\n"
-        f"=== 社内文書 ===\n{context}\n\n"
+        f"{reference}\n\n"
         f"=== 質問 ===\n{question}\n\n"
         "=== 回答 ==="
     )
@@ -158,6 +183,7 @@ def answer_question_stream(
     question: str,
     role: str,
     target_user_id: str | None = None,
+    profile: str | None = None,
 ) -> tuple[list[str], Iterator[str]]:
     """質問を受け取り、参照ソースIDと「回答を少しずつ生み出す入れ物」を返す（ストリーミング版）。
 
@@ -166,6 +192,8 @@ def answer_question_stream(
         role           … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
         target_user_id … 社員データ画面から「この社員について」質問する場合の対象社員の user_id。
                          省略時（None）は従来どおり、role だけで検索範囲が決まる
+        profile        … 対象社員の基本情報（app.users.format_user_profile が作った文字列）。
+                         社員データ画面からの質問のときだけ渡す。通常のチャットでは None
 
     出力:
         (参照した source_id のリスト, 回答テキストの断片を順に取り出せるイテレータ)
@@ -182,10 +210,21 @@ def answer_question_stream(
     処理:
         1. vector_store.search に role と target_user_id を渡し、
            権限に応じた範囲で関連チャンクを取得
-        2. 関連チャンクが0件なら、定型メッセージを1回だけ流して終わる（生成はしない）
+        2. 関連チャンクが0件で、基本情報も無ければ、
+           定型メッセージを1回だけ流して終わる（生成はしない）
         3. ヒットしたチャンクから参照ソースIDを重複を除いて集める
-        4. 関連チャンクと質問からプロンプトを組み立てる
+        4. 基本情報＋関連チャンク＋質問からプロンプトを組み立てる
         5. Gemini のストリーミング生成を回し、断片が届くたびに1つずつ渡す
+
+    関連チャンクが0件でも、基本情報があれば生成する理由:
+        「奥村さんの家族構成は？」のように、答えが社員マスタ側にしか無い質問がある。
+        ここでチャンク0件を理由に打ち切ると、基本情報を渡した意味が無くなり、
+        画面には出ている情報なのにAIは「資料がありません」と答えることになる。
+        逆に、チャンクも基本情報も無いときは根拠がゼロなので、従来どおり生成しない。
+
+    参照ソースについて:
+        基本情報は検索結果ではないので referenced_sources には載せない。
+        基本情報だけで答えた場合、参照ソースは空リストのままになる。
 
     なぜ target_user_id をここで受けるだけで、そのまま search に渡すか:
         「誰の資料を見てよいか」の判断は vector_store.search が一手に引き受けている。
@@ -202,17 +241,18 @@ def answer_question_stream(
     #    target_user_id を渡した場合は「共通 ＋ その社員の個別」だけが対象になる
     hits = search(question, role=role, top_k=TOP_K, target_user_id=target_user_id)
 
-    # 2. 関連する文書が1件も無ければ、生成せず定型文を1回だけ流して終わる
-    #    参照ソースも無いので空リストを返す
-    if not hits:
+    # 2. 参考にできる情報が1つも無ければ、生成せず定型文を1回だけ流して終わる
+    #    （文書が0件でも、対象社員の基本情報があればそれを根拠に生成できるので続行する）
+    if not hits and not profile:
         return [], iter([NO_CONTEXT_MESSAGE])
 
     # 3. 回答の根拠になったソースIDを集める（重複を除きつつ、関連度が高い順を保つ）
+    #    基本情報は検索結果ではないため、ここには含めない（文書が0件なら空リストになる）
     referenced_sources = list(dict.fromkeys(hit["source_id"] for hit in hits))
 
-    # 4. 参考文書＋質問をまとめたプロンプトを作る（プロンプトには本文だけを渡す）
+    # 4. 基本情報＋参考文書＋質問をまとめたプロンプトを作る（プロンプトには本文だけを渡す）
     chunks = [hit["text"] for hit in hits]
-    prompt = _build_prompt(question, chunks)
+    prompt = _build_prompt(question, chunks, profile=profile)
 
     def generate_chunks() -> Iterator[str]:
         # Gemini のストリーミング生成。for で回すたびに、生成された断片が順に届く
