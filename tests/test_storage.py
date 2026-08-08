@@ -177,9 +177,14 @@ def test_ローカル_危険な保存パスは読み書きできない(
 class FakeBlob:
     """google-cloud-storage の Blob のうち、storage.py が使う操作だけを真似た偽物。"""
 
-    def __init__(self, name: str, objects: dict[str, bytes]) -> None:
+    def __init__(
+        self, name: str, objects: dict[str, bytes], opened_chunk_sizes: list[int | None]
+    ) -> None:
         self.name = name
         self._objects = objects
+        # open() に渡された chunk_size を呼び出し元（FakeBucket）側へ記録する。
+        # Blob は blob() のたびに作り捨てられるため、記録先はバケットが持つ
+        self._opened_chunk_sizes = opened_chunk_sizes
 
     def upload_from_string(self, data: bytes) -> None:
         self._objects[self.name] = data
@@ -197,7 +202,11 @@ class FakeBlob:
             raise NotFound(self.name)
         del self._objects[self.name]
 
-    def open(self, mode: str) -> io.BytesIO:
+    def open(self, mode: str, chunk_size: int | None = None) -> io.BytesIO:
+        # 本物の BlobReader と同じく chunk_size を受け取る。
+        # 既定を None にしてあるので、storage.py が渡し忘れれば記録が None になり、
+        # test_GCS_取り寄せる幅をSDKに渡している で検出できる
+        self._opened_chunk_sizes.append(chunk_size)
         if self.name not in self._objects:
             raise NotFound(self.name)
         return io.BytesIO(self._objects[self.name])
@@ -209,11 +218,13 @@ class FakeBucket:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.requested_names: list[str] = []
+        # open() に渡された chunk_size の履歴（取り寄せる幅を検証するため）
+        self.opened_chunk_sizes: list[int | None] = []
 
     def blob(self, name: str) -> FakeBlob:
         # 「どんな名前でSDKを呼んだか」を検証できるよう控えておく
         self.requested_names.append(name)
-        return FakeBlob(name, self.objects)
+        return FakeBlob(name, self.objects, self.opened_chunk_sizes)
 
 
 @pytest.fixture
@@ -260,6 +271,23 @@ def test_GCS_ストリーミングは分割して読み出す(
 
     assert b"".join(chunks) == b"0123456789"
     assert len(chunks) > 1, "分割されずに一括で読み出されている"
+
+
+def test_GCS_取り寄せる幅をSDKに渡している(fake_bucket: FakeBucket) -> None:
+    """blob.open に chunk_size を明示していること。
+
+    渡し忘れると BlobReader の既定 40MiB が使われ、read(STREAM_CHUNK_SIZE) を
+    1回呼んだだけで 40MiB がメモリへ載る（google/cloud/storage/fileio.py の read が
+    max(要求サイズ, chunk_size) を取得する作りのため）。
+    応答へ流す幅を小さくしてもメモリ保持量は減らないので、ここを固定して守る。
+    """
+    file_path = storage.save(_safe_save_name(), b"0123456789")
+
+    list(storage.open_stream(file_path))
+
+    assert fake_bucket.opened_chunk_sizes == [storage.GCS_DOWNLOAD_CHUNK_SIZE]
+    # 応答へ流す幅と取り寄せる幅は別物。同じ値に揃えてしまっていないことも固定する
+    assert storage.GCS_DOWNLOAD_CHUNK_SIZE != storage.STREAM_CHUNK_SIZE
 
 
 def test_GCS_存在しないオブジェクトの削除は失敗しない(fake_bucket: FakeBucket) -> None:

@@ -29,9 +29,29 @@ from app.upload_paths import build_safe_object_name, build_safe_upload_path
 
 logger = logging.getLogger(__name__)
 
-# ストリーミング配信で1回に読み出すバイト数。
+# ストリーミング配信で1回に読み出すバイト数（アプリが応答へ切り出す幅）。
 # 大きなファイル（最大50MB）を一度にメモリへ載せないために分割して読む
 STREAM_CHUNK_SIZE = 1024 * 1024  # 1MB
+
+# GCSから1回のHTTPレンジ要求で取り寄せるバイト数（ネットワークから取り寄せる幅）。
+#
+# STREAM_CHUNK_SIZE と分けている理由:
+#     この2つは意味が違う。STREAM_CHUNK_SIZE は「応答へ何バイトずつ流すか」で、
+#     こちらは「GCSへ何バイトまとめて取りに行くか」。同じ値にする必然性はない。
+#
+# 明示的に渡さないと何が起きるか（重要）:
+#     BlobReader は chunk_size を省略すると DEFAULT_CHUNK_SIZE = 40MiB を使う。
+#     さらに read(size) の実装が「max(要求サイズ, chunk_size) を取得する」ため
+#     （google/cloud/storage/fileio.py の read）、read(1MB) を1回呼んだだけで
+#     40MiB をダウンロードし、余りを丸ごとメモリ上のバッファへ退避する。
+#     つまり STREAM_CHUNK_SIZE を小さくしても、実際のメモリ保持量は減らない。
+#
+# なぜ 8MB か:
+#     50MBのファイル1件あたり、メモリ保持は約8MB、HTTPレンジ要求は7回で済む。
+#     1MBに揃えると要求が50回に増えてダウンロードが遅くなり、
+#     40MiBのままだと同時接続数十人（CLAUDE.md の想定規模）でメモリを圧迫する。
+#     その中間として、どちらの実害も出ない値を選んでいる。
+GCS_DOWNLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB
 
 # GCSクライアント。import 時ではなく、最初に必要になった時点で作る（_get_bucket を参照）
 _client: gcs.Client | None = None
@@ -183,7 +203,10 @@ def read_bytes(raw_path: str) -> bytes:
     # 検証: tests/test_storage.py の test_ローカル_危険な保存パスは読み書きできない が
     #       危険な保存パス8種 × 5操作（save/read_bytes/open_stream/exists/delete）で
     #       ValueError になること、おとりファイルが無傷であることを確かめている。
-    return build_safe_upload_path(raw_path).read_bytes()  # codeql[py/path-injection]
+    #
+    # 抑制の構文はアラート行の「直前の独立した行」に置く必要がある（行末に置くと効かない）
+    # codeql[py/path-injection]
+    return build_safe_upload_path(raw_path).read_bytes()
 
 
 def open_stream(raw_path: str) -> Iterator[bytes]:
@@ -201,7 +224,12 @@ def open_stream(raw_path: str) -> Iterator[bytes]:
     なぜ一括で読まないか:
         ファイルは最大50MB。ダウンロードのたびに全体をメモリへ載せると、
         同時アクセスが重なったときにメモリを圧迫する。
-        1MBずつ読み出して、読んだ分から順に応答へ流す。
+        STREAM_CHUNK_SIZE ずつ読み出して、読んだ分から順に応答へ流す。
+
+    GCSの場合に2つの幅が出てくる理由:
+        取り寄せる幅（GCS_DOWNLOAD_CHUNK_SIZE）と、応答へ流す幅（STREAM_CHUNK_SIZE）は
+        別物。前者を指定しないとSDKの既定（40MiB）が使われ、応答へ1MBずつ流していても
+        メモリには40MiB載る。詳しくは GCS_DOWNLOAD_CHUNK_SIZE のコメントを参照。
 
     なぜ署名付きURLを使わないか:
         署名付きURLは、URLさえ持っていればアプリの権限チェックを通らずに
@@ -211,7 +239,8 @@ def open_stream(raw_path: str) -> Iterator[bytes]:
     """
     if _current_backend() == "gcs":
         blob = _get_bucket().blob(build_safe_object_name(raw_path))
-        with blob.open("rb") as stream:
+        # chunk_size を省略するとSDKの既定 40MiB になり、read 1回で 40MiB 落ちてくる
+        with blob.open("rb", chunk_size=GCS_DOWNLOAD_CHUNK_SIZE) as stream:
             while chunk := stream.read(STREAM_CHUNK_SIZE):
                 yield chunk
         return

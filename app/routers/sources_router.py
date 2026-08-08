@@ -169,8 +169,28 @@ def _rollback_source(source_id: int, file_path: str | None) -> None:
     conn.close()
 
     # 保存した実体も消す（ファイルが無い登録＝URLの場合はスキップ）
+    #
+    # 失敗しても例外を投げ直さない理由:
+    #     この関数はベクトル化に失敗したあとの後始末として呼ばれる。
+    #     ここで例外が漏れると、呼び出し側が本来返したかった
+    #     「ベクトル化に失敗した」というエラーが、削除の失敗で塗り潰されてしまう。
+    #     利用者から見た原因が変わってしまうため、削除の失敗は握って続行する。
+    #
+    #     DBの行は既に消えているので、残るのは参照されない実体だけ
+    #     （GCSなら孤児オブジェクト、ローカルなら uploads/ の残骸）。
+    #     権限や整合性の問題は起こさないが、放置すると容量を食うため
+    #     手作業で消せるようにログへ file_path を残す。
     if file_path is not None:
-        storage.delete(file_path)
+        try:
+            storage.delete(file_path)
+        except Exception:
+            # file_path はDB由来の値。ログ改行インジェクションを防ぐため必ず通す
+            logger.exception(
+                "ロールバック中のファイル削除に失敗しました。"
+                "参照されない実体が残っている可能性があります source_id=%s file_path=%s",
+                source_id,
+                _sanitize_for_log(file_path),
+            )
 
 
 def _vectorize_and_save(

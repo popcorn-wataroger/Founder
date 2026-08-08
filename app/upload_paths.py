@@ -116,7 +116,10 @@ def build_safe_upload_path(raw_path: str) -> Path:
     #
     # 検証: tests/test_storage.py の危険な保存パス8種 × 5操作のテストで、
     #       UPLOAD_DIR の外にあるおとりファイルを読むことも消すこともできないことを確認済み。
-    if not safe_path.resolve().is_relative_to(UPLOAD_DIR.resolve()):  # codeql[py/path-injection]
+    #
+    # 抑制の構文はアラート行の「直前の独立した行」に置く必要がある（行末に置くと効かない）
+    # codeql[py/path-injection]
+    if not safe_path.resolve().is_relative_to(UPLOAD_DIR.resolve()):
         raise ValueError("unexpected file path")
 
     return safe_path
