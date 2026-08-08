@@ -17,7 +17,7 @@ from app.chat_history import (
 )
 from app.rag import answer_question, answer_question_stream
 from app.routers.auth_router import require_admin, verify_token
-from app.users import get_user_by_id
+from app.users import format_user_profile, get_user_by_id
 
 # チャット関連のAPIをまとめるルーター。URLは /api/chat から始まる
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -372,10 +372,14 @@ async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(r
         5. SSEで流し、完走したときだけ履歴に保存する
 
     /api/chat/stream との違い:
-        検索対象が違う。通常の社長チャットは全ソースが対象なので、
+        1つ目は検索対象。通常の社長チャットは全ソースが対象なので、
         「奥村さんについて」と聞いても別の社員の評価資料が根拠に混ざりうる。
         こちらは target_user_id を search まで渡し、
         「共通」と「その社員の個別」以外を検索の時点で除外する。
+
+        2つ目は社員マスタの基本情報（部署・生年月日・家族構成など）を参照できること。
+        通常のチャットではソース文書しか見ないため、「家族構成は？」と聞いても答えられない。
+        こちらは対象社員が決まっているので、その1人分の基本情報だけをプロンプトに渡す。
 
     セッションの持ち主について（重要）:
         セッションの持ち主は必ずトークンの user_id（＝質問した社長）にする。
@@ -407,10 +411,17 @@ async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(r
 
     # 4. 対象社員を指定して検索・生成する。
     #    ここで target_user_id を渡すことが、他の社員の個別ソースを除外する唯一の指示になる
+    #
+    #    profile には、その社員の基本情報（部署・生年月日・家族構成など）を渡す。
+    #    社員データ画面に出ている情報をAIも参照できるようにするため。
+    #    渡してよい項目の線引きは format_user_profile が持っている（password や role は含まない）。
+    #    このAPIは require_admin が付いた社長専用なので、
+    #    社員が他人の基本情報をAIから引き出す経路にはならない。
     referenced_sources, chunk_iterator = answer_question_stream(
         question,
         role=token["role"],
         target_user_id=req.target_user_id,
+        profile=format_user_profile(target_user),
     )
 
     # 5. 送信と履歴保存の作法は通常チャットと共通（_build_event_stream にまとめてある）

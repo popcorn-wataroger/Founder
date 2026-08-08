@@ -45,6 +45,7 @@ class RecordedCall:
         self.question: str | None = None
         self.role: str | None = None
         self.target_user_id: str | None = None
+        self.profile: str | None = None
 
 
 @pytest.fixture
@@ -56,10 +57,12 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> RecordedCall:
         question: str,
         role: str,
         target_user_id: str | None = None,
+        profile: str | None = None,
     ) -> tuple[list[str], Iterator[str]]:
         call.question = question
         call.role = role
         call.target_user_id = target_user_id
+        call.profile = profile
         return ["10", "20"], iter(["こんにちは", "、奥村さんの評価です。"])
 
     monkeypatch.setattr(chat_router, "answer_question_stream", fake_answer_question_stream)
@@ -111,6 +114,60 @@ def test_対象社員が検索まで渡る(temp_db: None, recorded: RecordedCall
     assert recorded.role == "admin"
     # 前後の空白は取り除かれてから渡る
     assert recorded.question == "直近の評価は？"
+
+
+def test_対象社員の基本情報がプロンプトに渡る(temp_db: None, recorded: RecordedCall) -> None:
+    """社員データ画面に出ている基本情報を、AIも参照できることを固定する（Issue #72）。
+
+    これが渡らないと「家族構成は？」と聞いても答えられない。
+    画面には表示されているのにAIは知らない、という食い違いになる。
+    """
+    response = TestClient(app).post(
+        "/api/chat/staff-inquiry",
+        json={"question": "家族構成は？", "target_user_id": STAFF_USER_ID},
+        headers=_admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert recorded.profile is not None
+    # users.csv の user_id=2（EMP001 奥村仁哉）の値が渡っている
+    assert "氏名: 奥村仁哉" in recorded.profile
+    assert "家族構成: 配偶者・子1" in recorded.profile
+
+
+def test_基本情報にパスワードとロールが含まれない(temp_db: None, recorded: RecordedCall) -> None:
+    """users.csv には平文パスワードがある。AIに渡すとそのまま回答文に出かねない。
+
+    ホワイトリスト方式（app.users.PROFILE_FIELD_LABELS）が効いていることを、
+    APIを通した状態でも確かめておく。
+    """
+    response = TestClient(app).post(
+        "/api/chat/staff-inquiry",
+        json={"question": "この人について教えて", "target_user_id": STAFF_USER_ID},
+        headers=_admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert recorded.profile is not None
+    assert "password" not in recorded.profile
+    assert "employee" not in recorded.profile
+
+
+def test_通常チャットには基本情報を渡さない(temp_db: None, recorded: RecordedCall) -> None:
+    """/api/chat/stream は対象社員が決まらないので、基本情報を渡してはいけない。
+
+    ここで渡してしまうと、社員が通常チャットから他人の生年月日や家族構成を
+    引き出せる経路になり、権限ルールの趣旨に反する。
+    """
+    response = TestClient(app).post(
+        "/api/chat/stream",
+        json={"question": "有給は何日？"},
+        headers=_admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert recorded.question == "有給は何日？"
+    assert recorded.profile is None
 
 
 def test_SSEでsourcesとtokenとdoneが順に流れる(temp_db: None, recorded: RecordedCall) -> None:
