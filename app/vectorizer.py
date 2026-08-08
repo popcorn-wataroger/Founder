@@ -4,6 +4,7 @@
 embedding（ベクトル化）や Qdrant への保存は後続ステップで追加する。
 """
 
+import io
 import ipaddress
 import socket
 from urllib.parse import urlsplit, urlunsplit
@@ -15,12 +16,11 @@ from google import genai
 from pptx import Presentation
 from pypdf import PdfReader
 
+# ファイルの読み出しは app/storage.py に任せる。
+# 保存先がGCSかローカルかを、このモジュールは知らなくてよい
+# （名前の検証も storage の中で必ず行われる）。
+from app import storage
 from app.config import GEMINI_API_KEY
-
-# 保存パスを安全に組み立て直す処理は app/upload_paths.py に集約している。
-# 本文抽出（このモジュール）とダウンロード（sources_router）の両方が
-# 同じ判定ルールを使うため、片方だけ穴が開くことを防ぐ。
-from app.upload_paths import build_safe_upload_path
 
 # URL取得時のタイムアウト秒数（応答が無いURLで固まらないための保険）
 URL_TIMEOUT = 10
@@ -41,7 +41,8 @@ def extract_text(path: str, file_type: str) -> str:
     """ソースから本文テキストを取り出す。
 
     入力:
-        path      … ファイルの保存パス。ただし file_type が 'url' の場合はURL文字列。
+        path      … ストレージ上のファイルを指すキー（DBの file_path）。
+                    ただし file_type が 'url' の場合はURL文字列。
         file_type … ソースの種別（'pdf' / 'docx' / 'pptx' / 'txt' / 'url'）
 
     出力:
@@ -63,10 +64,32 @@ def extract_text(path: str, file_type: str) -> str:
     raise ValueError(f"未対応のファイル形式です: {file_type}")
 
 
+def _read_file(path: str) -> io.BytesIO:
+    """ストレージからファイルの中身を読み出し、ライブラリに渡せる形にして返す。
+
+    入力:
+        path … ストレージ上のファイルを指すキー（DBの file_path）
+
+    出力:
+        中身を載せた BytesIO（ファイルのように読めるオブジェクト）
+
+    なぜパスではなく中身を渡すのか:
+        保存先がGCSになると「ローカルのパス」は存在しない。
+        PDF/Word/PowerPoint のライブラリはいずれもファイルのように読める
+        オブジェクトを受け取れるので、中身をメモリ上に載せて渡す。
+        これで、保存先がどこであっても抽出処理は同じコードで済む。
+
+    安全性について:
+        パスの検証は storage.read_bytes の中で必ず行われる
+        （保存名の生成規則に合わない値は ValueError になる）。
+        このモジュールが検証ルールを書き写す必要はない。
+    """
+    return io.BytesIO(storage.read_bytes(path))
+
+
 def _extract_pdf(path: str) -> str:
     """PDFから本文を抽出する。"""
-    # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
-    reader = PdfReader(build_safe_upload_path(path))
+    reader = PdfReader(_read_file(path))
     # ページごとにテキストを取り出し、改行で連結する
     pages = [page.extract_text() or "" for page in reader.pages]
     return "\n".join(pages)
@@ -74,9 +97,7 @@ def _extract_pdf(path: str) -> str:
 
 def _extract_docx(path: str) -> str:
     """Word(.docx)から本文を抽出する。"""
-    # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
-    # python-docx の型定義は Path を受け取らないため str に変換して渡す（値は同じ）
-    document = Document(str(build_safe_upload_path(path)))
+    document = Document(_read_file(path))
     # 段落（paragraph）ごとの文字列を改行で連結する
     paragraphs = [para.text for para in document.paragraphs]
     return "\n".join(paragraphs)
@@ -84,9 +105,7 @@ def _extract_docx(path: str) -> str:
 
 def _extract_pptx(path: str) -> str:
     """PowerPoint(.pptx)から本文を抽出する。"""
-    # 入力パスをそのまま渡さず、検証済みの要素から作り直した安全なパスだけを渡す
-    # python-pptx の型定義は Path を受け取らないため str に変換して渡す（値は同じ）
-    presentation = Presentation(str(build_safe_upload_path(path)))
+    presentation = Presentation(_read_file(path))
     texts: list[str] = []
     # スライド → 図形(shape) の順にたどり、テキストを持つ図形だけ集める
     for slide in presentation.slides:
@@ -98,12 +117,8 @@ def _extract_pptx(path: str) -> str:
 
 def _extract_txt(path: str) -> str:
     """テキスト(.txt)をそのまま読み込む。"""
-    # 入力パスをそのまま開かず、検証済みの要素から作り直した安全なパスだけを開く
-    safe_path = build_safe_upload_path(path)
-
-    # 文字化けを避けるため UTF-8 で読み込む
-    with open(safe_path, encoding="utf-8") as f:
-        return f.read()
+    # 文字化けを避けるため UTF-8 として読む
+    return storage.read_bytes(path).decode("utf-8")
 
 
 def _resolved_ips_are_public(hostname: str) -> bool:

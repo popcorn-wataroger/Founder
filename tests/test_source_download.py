@@ -6,6 +6,13 @@
     3. URLソースは実ファイルが無いので明示的に弾く
     4. file_name（完全なユーザー入力）をヘッダに載せてもインジェクションが起きない
 
+4について（保存先がGCSになったことによる変更）:
+    以前は Starlette の FileResponse が Content-Disposition を組み立てており、
+    エンコードもライブラリ側が担っていた。GCSからのストリーミング配信に変えたため、
+    同じ方式を build_content_disposition として自前に持っている。
+    エンドポイント経由のテストに加えて、この関数単体にも同じ入力を通し、
+    ライブラリが守ってくれていた性質を自分たちで担保していることを固定する。
+
 なぜ本物のエンドポイントを叩くか:
     パスの組み立てと権限判定は download_source の中にある。テスト側で同じロジックを
     書き写しても、本番コードを直し忘れたときに気づけない。そこで TestClient で
@@ -19,10 +26,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import database, upload_paths
+from app import database, storage, upload_paths
 from app.main import app
-from app.routers import sources_router
 from app.routers.auth_router import require_admin, verify_token
+from app.routers.sources_router import _safe_download_name, build_content_disposition
 
 
 @pytest.fixture
@@ -36,11 +43,15 @@ def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path
         差し替える UPLOAD_DIR は app.upload_paths のもの。
         安全なパスを組み立てるのは build_safe_upload_path であり、
         その関数が参照するモジュール変数を向け直さないとテスト用の置き場を見てくれない。
+
+        あわせて app/storage.py を「バケット未設定 かつ テスト環境」に固定し、
+        ローカル保存の経路に倒す（GCSへ実通信させないため）。
     """
     test_upload_dir = tmp_path / "uploads"
     test_upload_dir.mkdir(parents=True)
     monkeypatch.setattr(upload_paths, "UPLOAD_DIR", test_upload_dir)
-    monkeypatch.setattr(sources_router, "UPLOAD_DIR", test_upload_dir)
+    monkeypatch.setattr(storage, "GCS_BUCKET_NAME", "")
+    monkeypatch.setattr(storage, "APP_ENV", "test")
 
     # DBも使い捨てのファイルに向け、テーブルを作っておく
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
@@ -175,16 +186,18 @@ def test_想定外のfile_pathは404で読み出せない(
     assert "漏れてはいけない" not in response.text
 
 
-@pytest.mark.parametrize(
-    "危険なfile_name",
-    [
-        'evil"; x=y.txt',  # ヘッダの値を閉じて別の属性を差し込む
-        "evil\r\nX-Injected: 1.txt",  # 改行でヘッダを分割する
-        "evil\nSet-Cookie: a=b.txt",
-        "../../evil.txt",  # 表示名にディレクトリ区切りを混ぜる
-        "sub/dir/evil.txt",
-    ],
-)
+# ヘッダへの注入を狙った表示名の一覧。
+# エンドポイント経由のテストと、ヘッダ組み立て関数単体のテストで同じ入力を使う
+危険なfile_name一覧 = [
+    'evil"; x=y.txt',  # ヘッダの値を閉じて別の属性を差し込む
+    "evil\r\nX-Injected: 1.txt",  # 改行でヘッダを分割する
+    "evil\nSet-Cookie: a=b.txt",
+    "../../evil.txt",  # 表示名にディレクトリ区切りを混ぜる
+    "sub/dir/evil.txt",
+]
+
+
+@pytest.mark.parametrize("危険なfile_name", 危険なfile_name一覧)
 def test_危険なfile_nameでもヘッダに注入されない(
     client: TestClient, upload_dir: Path, 危険なfile_name: str
 ) -> None:
@@ -232,3 +245,52 @@ def test_DBに行はあるが実ファイルが無い場合は404(client: TestCl
     response = client.get(f"/api/sources/{source_id}/download")
 
     assert response.status_code == 404, response.text
+
+
+# ---------------------------------------------------------------------------
+# Content-Disposition の組み立て関数（build_content_disposition）単体のテスト
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("危険なfile_name", 危険なfile_name一覧)
+def test_ヘッダ組み立て関数は危険な表示名を無害化する(危険なfile_name: str) -> None:
+    """FileResponse が担っていた性質を、この関数だけで満たしていることを固定する。
+
+    エンドポイント経由のテストと同じ入力を通す。あちらは「結果として注入されない」を、
+    こちらは「組み立て関数の出力そのものが安全である」を確かめる。
+    関数単体で押さえておけば、将来この関数を別の場所から使っても性質が保たれる。
+    """
+    disposition = build_content_disposition(_safe_download_name(危険なfile_name, "fallback.txt"))
+
+    assert disposition.startswith("attachment;")
+
+    # 改行が残っていればヘッダを分割できてしまう
+    assert "\r" not in disposition
+    assert "\n" not in disposition
+
+    # 表示名にディレクトリ区切りが残っていない
+    assert "/" not in disposition
+    assert "\\" not in disposition
+
+    # HTTPヘッダは latin-1 で送られる。非ASCIIが生で残っていれば送信時に落ちる
+    disposition.encode("latin-1")
+
+    # filename="..." 形式のときは、値の途中でクォートを閉じられていない
+    # （閉じられると 'x=y' のような別の属性を差し込めてしまう）
+    if 'filename="' in disposition:
+        値 = disposition.split('filename="', 1)[1]
+        assert 値.count('"') == 1, f"クォートを閉じられている: {disposition}"
+
+
+def test_ヘッダ組み立て関数は安全な名前をそのまま載せる() -> None:
+    """エンコードが要らない名前は、読める形のまま提示する。"""
+    assert build_content_disposition("report.pdf") == 'attachment; filename="report.pdf"'
+
+
+def test_ヘッダ組み立て関数は日本語名をRFC5987形式にする() -> None:
+    """非ASCIIはパーセントエンコードし、filename* 形式で載せる。"""
+    disposition = build_content_disposition("就業規則.txt")
+
+    assert disposition.startswith("attachment; filename*=utf-8''")
+    assert "就業規則" not in disposition  # 生の非ASCIIが残っていない
+    disposition.encode("latin-1")

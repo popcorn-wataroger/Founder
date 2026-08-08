@@ -23,7 +23,8 @@ UPLOAD_DIR: Final[Path] = Path("uploads")
 # 未設定をローカル扱いにすると、本番で APP_ENV を渡し忘れたときに
 # 開発用の既定値で起動が通ってしまい、設定漏れに気づけないため。
 # 危険側にフォールバックさせない、が原則。
-# ローカルは .env の APP_ENV=local、CIは ci.yml の APP_ENV=test で明示している。
+# ローカルは scripts/dev.py が起動前に APP_ENV=local を設定し、
+# CIは ci.yml の APP_ENV=test で明示している（どちらも未設定にならない）。
 APP_ENV: Final[str] = os.getenv("APP_ENV", "")
 
 # 開発用のゆるい既定値を許してよい環境。
@@ -77,8 +78,25 @@ GEMINI_API_KEY: Final[str] = os.getenv("GEMINI_API_KEY", "")
 QDRANT_URL: Final[str] = os.getenv("QDRANT_URL", "")
 QDRANT_API_KEY: Final[str] = os.getenv("QDRANT_API_KEY", "")
 
+# Google Cloud Storage のバケット名。
+# 設定されていればGCSへ、空ならローカルの UPLOAD_DIR へ保存する
+# （どちらを使うかの判断は app/storage.py に集約している）。
+#
+# 認証情報（GOOGLE_APPLICATION_CREDENTIALS）をここで読まない理由:
+#     google-cloud-storage のSDKが同名の環境変数を自分で読む。
+#     config でも読むと「正解が2箇所にある」状態になり、片方だけ変えたときにずれる。
+#     .env.example には引き続き記載しておき、設定する場所だけ伝える。
+GCS_BUCKET_NAME: Final[str] = os.getenv("GCS_BUCKET_NAME", "")
+
 # 本番相当で未設定だと機能が動かなくなるが、起動は止めない設定。
 # JWT_SECRET_KEY と違い、漏洩ではなく可用性の問題なので扱いを分けている。
+#
+# GCS_BUCKET_NAME をここに入れない理由:
+#     こちらは警告では済まない。本番相当でバケット名が無いままローカル保存に
+#     倒れると、アップロードは成功したように見えてコンテナ停止時にファイルが消える。
+#     そのため app/storage.py の _resolve_backend が import 時に RuntimeError で
+#     起動を止める（JWT_SECRET_KEY と同じ「危険側に倒さない」扱い）。
+#     判定を storage 側に置くのは、保存先の知識をあのモジュールへ閉じ込めるため。
 _OPTIONAL_PROD_SETTINGS: Final[tuple[tuple[str, str], ...]] = (
     ("GEMINI_API_KEY", GEMINI_API_KEY),
     ("QDRANT_URL", QDRANT_URL),
