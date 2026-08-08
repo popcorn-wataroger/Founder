@@ -36,12 +36,44 @@ _NO_DATABASE_URL_MESSAGE = (
     "DATABASE_URL を用意します。"
 )
 
+# テスト用データベースだと判断するための、データベース名に含まれるべき文字列。
+# ローカルの founder_test も、CIの founder_test も、どちらもこれを含む。
+_TEST_DB_NAME_MARKER = "test"
+
+
+def _wrong_database_message(database_name: str) -> str:
+    """接続先がテスト用でないときに出すエラーメッセージを組み立てる。
+
+    入力: 実際に接続したデータベース名
+    処理: 何が起きたかと、どう直すかを1つの文にまとめる
+    出力: pytest.fail に渡す文字列
+    """
+    return (
+        f"接続先のデータベース名が '{database_name}' です。"
+        f"名前に '{_TEST_DB_NAME_MARKER}' を含まないため、"
+        "本番用のデータベースを指している可能性があります。"
+        "テーブルを空にせずに中断しました。"
+        "DATABASE_URL の末尾をテスト用データベースに変更してから実行してください。"
+        "例: postgresql://founder:<PASSWORD>@localhost:5432/founder_test"
+    )
+
 
 def _truncate_all_tables() -> None:
     """テスト用DBの4テーブルを空にし、IDの採番も1に戻す。
 
     入力: なし（接続先は DATABASE_URL）
+    処理: 接続先がテスト用DBか確認してから TRUNCATE する
     出力: なし（副作用としてテーブルの中身が消える）
+    例外: 接続先がテスト用DBでなければ pytest.fail で中断する
+
+    なぜ接続先をコードで確認するか（重要）:
+        この関数は接続先のテーブルを問答無用で空にする。
+        DATABASE_URL の末尾が founder（開発用）のままテストを実行すると、
+        ソース・チャット履歴・最終ログインが1件残らず消える。
+        README にも注意書きを置いているが、文章は読み飛ばされるし、
+        シェルに前回の export が残っていることにも気づきにくい。
+        取り違えを本当に防げるのは、消す直前に自分で確かめて止まる仕組みだけなので、
+        警告文ではなくコードで止める。
 
     なぜ RESTART IDENTITY を付けるか:
         TRUNCATE だけだと行は消えても連番の採番位置は進んだままになる。
@@ -55,6 +87,17 @@ def _truncate_all_tables() -> None:
         PostgreSQL がエラーにするため、関連するテーブルもまとめて対象にする。
     """
     conn = database.get_connection()
+
+    # 実際に繋がった先の名前をDBに聞く。URLの文字列を見るのではなく接続先に確認するのは、
+    # URLの書き方（ソケット指定など）に関係なく同じ判定になるようにするため
+    row = conn.execute("SELECT current_database()").fetchone()
+    database_name = row["current_database"] if row else ""
+
+    if _TEST_DB_NAME_MARKER not in database_name:
+        # 1行も消さずに中断する。中断する前に接続は閉じておく
+        conn.close()
+        pytest.fail(_wrong_database_message(database_name))
+
     conn.execute(f"TRUNCATE {', '.join(TEST_TABLES)} RESTART IDENTITY CASCADE")
     conn.commit()
     conn.close()

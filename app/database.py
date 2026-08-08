@@ -45,7 +45,17 @@ def get_connection() -> psycopg.Connection[dict[str, Any]]:
 
 
 def init_db() -> None:
-    """データベースの初期化（テーブル作成）"""
+    """データベースの初期化（テーブル作成）。
+
+    入力: なし（接続先は get_connection 経由で DATABASE_URL から決まる）
+    処理: 4テーブル（sources / chat_sessions / chat_messages / user_logins）を
+          CREATE TABLE IF NOT EXISTS で作り、commit して確定する
+    出力: なし（副作用としてテーブルが作られる）
+    例外: DATABASE_URL が未設定・空のとき RuntimeError（get_connection が投げる）
+
+    IF NOT EXISTS を付けているため、既にテーブルがある状態で呼んでも何も起きない。
+    アプリの起動時（app/main.py の lifespan）とテストの準備で毎回呼ばれる。
+    """
     conn = get_connection()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sources (

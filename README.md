@@ -63,7 +63,19 @@ http://localhost:8000 にアクセス。
 
 ### 3. テストを実行するとき
 
-テスト用の `founder_test` データベースを指してください。
+テストは本番と同じ PostgreSQL に対して実行します。**初回だけ**、テスト用の `founder_test` データベースを作成してください。
+
+```bash
+gcloud sql databases create founder_test --instance=founder-db --project=notebooklm-482403
+```
+
+作成済みかどうかは次で確認できます（一覧に `founder_test` があれば作成済み）。
+
+```bash
+gcloud sql databases list --instance=founder-db --project=notebooklm-482403
+```
+
+2回目以降は、`founder_test` を指して実行するだけです。
 
 ```bash
 export DATABASE_URL="postgresql://founder:<PASSWORD>@localhost:5432/founder_test"
@@ -72,6 +84,8 @@ uv run pytest
 
 > **注意: 末尾を `founder`（本番用）にしないでください。**
 > `tests/conftest.py` はテスト1件ごとに `sources` / `chat_sessions` / `chat_messages` / `user_logins` の4テーブルを `TRUNCATE` します。接続先を間違えると、**開発中に入れたデータが消えます。**
+>
+> このため `tests/conftest.py` は、接続先のデータベース名に `test` が含まれない場合、テーブルを空にせずにテストを中断します。取り違えたときは1件も消さずに失敗するので、エラーメッセージに従って `DATABASE_URL` を直してください。
 
 CI（GitHub Actions）では `.github/workflows/ci.yml` が PostgreSQL の service コンテナを立て、`DATABASE_URL` を渡しています。proxy は使いません。
 
