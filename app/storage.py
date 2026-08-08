@@ -189,7 +189,11 @@ def read_bytes(raw_path: str) -> bytes:
         return blob_bytes
 
     # CodeQL は raw_path（DB由来＝信用しない値）が open 相当の sink に届いたと見なすが、
-    # 実際には raw_path そのものはパスの材料になっていない。誤検知として抑制する。
+    # 実際には raw_path そのものはパスの材料になっていない。誤検知と判断している。
+    #
+    # py/path-injection のインライン抑制コメントは置いていない。
+    # 行末・直前の独立行のどちらでも GitHub CodeQL Action 側で効かず、
+    # アラートが再検出されたため削除した。アラートは GitHub 上で dismiss する。
     #
     # 安全性を担保している関数:
     #     app/upload_paths.py の build_safe_upload_path
@@ -203,9 +207,6 @@ def read_bytes(raw_path: str) -> bytes:
     # 検証: tests/test_storage.py の test_ローカル_危険な保存パスは読み書きできない が
     #       危険な保存パス8種 × 5操作（save/read_bytes/open_stream/exists/delete）で
     #       ValueError になること、おとりファイルが無傷であることを確かめている。
-    #
-    # 抑制の構文はアラート行の「直前の独立した行」に置く必要がある（行末に置くと効かない）
-    # codeql[py/path-injection]
     return build_safe_upload_path(raw_path).read_bytes()
 
 
