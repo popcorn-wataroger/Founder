@@ -131,7 +131,7 @@ gcloud services list --enabled --project=notebooklm-482403 \
 
 次の5つが出れば足りています。
 
-```
+```text
 artifactregistry.googleapis.com
 run.googleapis.com
 secretmanager.googleapis.com
@@ -173,7 +173,7 @@ gcloud artifacts repositories list --project=notebooklm-482403
 
 **Cloud Run からの接続は Unix ソケット経由**になります。ローカル開発（`cloud-sql-proxy` 経由で `localhost:5432`）とは URL の形が違う点に注意してください。
 
-```
+```text
 ローカル   : postgresql://founder:<パスワード>@localhost:5432/founder
 Cloud Run : postgresql://founder:<パスワード>@/founder?host=/cloudsql/<接続名>
 ```
@@ -221,7 +221,7 @@ gcloud secrets versions access latest --secret=DATABASE_URL --project=notebooklm
 
 次のとおり表示されれば正しく登録できています。
 
-```
+```text
 postgresql://founder:********@/founder?host=/cloudsql/notebooklm-482403:asia-northeast1:founder-db
 ```
 
@@ -320,7 +320,7 @@ arm64 のイメージを push してデプロイすると、次のようにな�
 docker image inspect "$IMAGE" --format '{{.Os}}/{{.Architecture}}'
 ```
 
-```
+```text
 linux/amd64   ← これなら push してよい
 linux/arm64   ← push しない。4-2 からやり直す
 ```
@@ -365,7 +365,7 @@ URL を知っていれば誰でもページを開ける状態になります。*
 
 #### `--set-secrets` の書式
 
-```
+```text
 環境変数名=シークレット名:バージョン番号
 ```
 
