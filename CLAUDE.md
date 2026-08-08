@@ -7,12 +7,17 @@ NotebookLM的な社内ナレッジQAボット。社長がソースをアップ�
 ## コマンド
 
 ```bash
-# 開発サーバー起動
-uv run uvicorn app.main:app --reload
+# GCP の認証情報を用意する（初回のみ。scripts/dev.py が Secret Manager を読むため必要）
+gcloud auth application-default login
+
+# 開発サーバー起動（Secret Manager から機密情報を取得してから uvicorn を起動する）
+uv run python scripts/dev.py
 
 # 依存パッケージ追加時
 uv add <package>
 ```
+
+機密情報の扱いは `docs/secrets.md` を参照。
 
 ## 技術スタック
 

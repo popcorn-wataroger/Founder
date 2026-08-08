@@ -32,8 +32,11 @@ uv sync
 ## 開発中の動作確認コマンド
 
 ```bash
-uv run uvicorn app.main:app --reload
+gcloud auth application-default login  # 初回のみ
+uv run python scripts/dev.py
 ```
+
+`scripts/dev.py` が Secret Manager から機密情報を取得し、環境変数に入れてから uvicorn を起動する。`.env` に機密情報を書く必要はない（詳細は `docs/secrets.md`）。
 
 ブラウザで http://localhost:8000 を開く。
 
@@ -59,7 +62,7 @@ Closes #番号
 - （何をしたか）
 
 ## 動作確認
-- `uv run uvicorn app.main:app --reload` で起動
+- `uv run python scripts/dev.py` で起動
 - EMP001 で社員画面を確認
 - ADMIN で管理者画面を確認
 

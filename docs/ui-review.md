@@ -8,8 +8,11 @@
 
 ```bash
 uv sync
-uv run uvicorn app.main:app --reload
+gcloud auth application-default login  # 初回のみ
+uv run python scripts/dev.py
 ```
+
+`scripts/dev.py` は Secret Manager から機密情報を取得して環境変数に入れたうえで uvicorn を起動します（`docs/secrets.md` を参照）。
 
 ブラウザで次のURLを開きます。
 
@@ -89,7 +92,7 @@ PR の「動作確認」には、実際に確認した内容を書きます。
 
 ```markdown
 ## 動作確認
-- `uv run uvicorn app.main:app --reload` で起動
+- `uv run python scripts/dev.py` で起動
 - `EMP001` で社員チャット画面を確認
 - `ADMIN` で管理者ホーム、ソース管理、スタッフ一覧を確認
 - PC幅とスマホ幅で表示崩れがないことを確認
@@ -116,7 +119,7 @@ UIを変更したPRでは、できるだけスクリーンショットを添付�
 
 ```bash
 uv sync
-uv run uvicorn app.main:app --reload
+uv run python scripts/dev.py
 ```
 
 それでも解決しない場合は、以下を共有して相談してください。
