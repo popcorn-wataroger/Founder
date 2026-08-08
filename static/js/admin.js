@@ -19,10 +19,28 @@ function authHeaders(extra) {
 }
 
 // HTMLエスケープ（ファイル名やURLをそのまま埋め込むと壊れるため）
+//
+// 入力: 任意の値（null / undefined も可）
+// 処理: HTMLで特別な意味を持つ5文字を実体参照に置き換える
+// 出力: テンプレートリテラルに埋め込んでも安全な文字列
+//
+// & を必ず最初に置換する。
+// 順番を間違えて < を先に置換すると、そこで作られた &lt; の & を
+// 後から来た & の置換が拾ってしまい、&amp;lt; になる。
+// 結果、画面には元の < ではなく「&lt;」という文字列がそのまま表示される。
+//
+// 以前は div.textContent に入れて div.innerHTML で読み出していた。
+// 動作としては正しいが、「DOMのテキストをHTMLとして再解釈する」形のため
+// CodeQL の js/xss-through-dom に検出される。
+// innerHTML を経由しないこの実装なら、意図と検出結果が一致する。
 function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text == null ? "" : String(text);
-  return div.innerHTML;
+  if (text == null) return "";
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // ISO日時を「2025.4.1」形式に整形する

@@ -40,7 +40,9 @@ Interrupted: 4 errors during collection
 ```
 
 これは**テストが壊れているわけでも、環境構築に失敗しているわけでもありません。**
-`.env.example` の `GEMINI_API_KEY` は空欄なので、環境を作ったばかりだと必ずこの状態になります。
+機密情報は `scripts/dev.py` 経由で Secret Manager から取得する運用なので、
+`pytest` を直接実行するシェルには `GEMINI_API_KEY` が入っていません。
+つまり、この行のようにコマンドの前でダミー値を渡さないと必ずこの状態になります。
 
 テストは実際の Gemini API を呼ばないので、ダミーの値で問題ありません。
 `.github/workflows/ci.yml` も同じ方法でテストを実行しています。

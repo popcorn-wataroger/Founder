@@ -87,8 +87,9 @@ GEMINI_API_KEY=dummy-key-for-ci APP_ENV=test uv run pytest -q --tb=short
 `GEMINI_API_KEY` が空だとテストの収集前に `ValueError: No API key was provided` で落ちます。
 テストは実際のAPIを呼ばないのでダミー値で足ります（`.github/workflows/ci.yml` も同じ方法です）。
 
-`.env` の `GEMINI_API_KEY` が空のまま作業している場合に必ず起きるので、
-このエラーが出ても「テストが壊れている」わけではありません。
+機密情報は `scripts/dev.py` 経由で Secret Manager から取得する運用のため、
+`pytest` を直接実行するシェルには `GEMINI_API_KEY` が入っていません。
+ダミー値を渡さなければ必ず起きるエラーであり、「テストが壊れている」わけではありません。
 
 **中止条件:**
 - 1つでも失敗したら、**中止**してエラー内容と直し方を説明してください。
@@ -105,7 +106,7 @@ git diff origin/main...HEAD --name-only
 UI が変更されている場合は、次を作業者に確認してください。
 
 ```bash
-uv run uvicorn app.main:app --reload
+uv run python scripts/dev.py
 ```
 
 - 社員画面（`EMP001` でログイン）を確認したか
@@ -126,7 +127,7 @@ Closes #番号
 - （何をしたか）
 
 ## 動作確認
-- `uv run uvicorn app.main:app --reload` で起動
+- `uv run python scripts/dev.py` で起動
 - EMP001 で社員画面を確認
 - ADMIN で管理者画面を確認
 

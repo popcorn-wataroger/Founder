@@ -38,6 +38,7 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "google-cloud-secret-manager>=2.30.0",
     "httpx>=0.28.1",
     "mypy>=2.1.0",
     "pytest>=9.0.3",
