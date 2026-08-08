@@ -126,3 +126,4 @@ GCS_BUCKET_NAME=<バケット名> uv run python scripts/dev.py
 - GitHub の運用ルールは `docs/github-workflow.md` を参照。
 - UI の確認方法は `docs/ui-review.md` を参照。
 - 機密情報（シークレット）の扱いは `docs/secrets.md` を参照。
+- Cloud Run へのデプロイ手順は `docs/deploy.md` を参照。
