@@ -113,7 +113,7 @@ async def login(req: LoginRequest):
 
     # 認証に成功したので、この社員の最終ログイン日時を更新する。
     # user_id はログインしてきた側に由来する値なので、
-    # record_login の中で ? プレースホルダにバインドしている（SQL文へ埋め込まない）
+    # record_login の中で %s プレースホルダにバインドしている（SQL文へ埋め込まない）
     record_login(user["user_id"])
 
     token = create_access_token(user_id=user["user_id"], role=user["role"])

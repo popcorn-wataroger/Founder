@@ -38,6 +38,21 @@ jobs:
   test:
     name: Test & Smoke Test
     runs-on: ubuntu-latest
+    # テストは本番と同じ PostgreSQL に対して実行する（SQLiteとの二重サポートはしない）。
+    # service コンテナは job と同じネットワークで起動するので localhost:5432 で繋がる
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: founder
+          POSTGRES_PASSWORD: founder
+          POSTGRES_DB: founder_test
+        ports: ['5432:5432']
+        # DBが受け付けられる状態になるまで step を始めない
+        # （起動直後に接続しにいくと connection refused で落ちるため）
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
     env:
       # app/vectorizer.py が import 時に genai.Client を生成するため、値が空だと
       # テスト収集前に ValueError で落ちる。CIでは実際のAPIを呼ばないのでダミーで足りる
@@ -49,6 +64,8 @@ jobs:
       QDRANT_URL: http://localhost:6333
       FRONTEND_URL: http://localhost:8000
       APP_ENV: test
+      # 上の service コンテナへの接続先。app/database.py はこの値だけを見る
+      DATABASE_URL: postgresql://founder:founder@localhost:5432/founder_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

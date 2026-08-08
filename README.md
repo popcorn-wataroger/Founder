@@ -22,15 +22,72 @@
 
 ## セットアップ
 
+初回だけ実行するもの。
+
 ```bash
 uv sync
-gcloud auth application-default login  # 初回のみ
+gcloud auth application-default login  # GCPの認証情報を用意する
+brew install cloud-sql-proxy           # Cloud SQL への接続に使う
+```
+
+機密情報（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）は `scripts/dev.py` が Google Secret Manager から取得して環境変数に入れるため、`.env` に手で書く必要はありません。詳細は `docs/secrets.md` を参照。
+
+## ローカル開発の起動手順
+
+データベースは Cloud SQL（PostgreSQL）にあります。ローカルからは **Cloud SQL Auth Proxy** 経由で接続するため、ターミナルを2つ使います。
+
+### 1. proxy を起動する（ターミナルA・起動したままにする）
+
+```bash
+cloud-sql-proxy notebooklm-482403:asia-northeast1:founder-db --port 5432
+```
+
+このコマンドは動かしっぱなしにします。`localhost:5432` へ来た接続を Cloud SQL のインスタンスへ中継する役割で、止めるとアプリはDBに繋がらなくなります。
+
+proxy を使う理由は、Cloud SQL がインターネットへ直接ポートを開けていないためです。認証は `gcloud auth application-default login` で用意した認証情報を proxy が使うので、DBのIPを公開したりファイアウォールを開けたりする必要がありません。
+
+### 2. アプリを起動する（ターミナルB）
+
+`DATABASE_URL` を設定してから起動します。この値は `scripts/dev.py` が取得する対象に**入っていない**ため、自分で環境変数に入れる必要があります。
+
+```bash
+export DATABASE_URL="postgresql://founder:<PASSWORD>@localhost:5432/founder"
 uv run python scripts/dev.py
 ```
 
+`<PASSWORD>` は実際の値に置き換えてください。**パスワードをこのファイルやチャット・Issue・PRに書かないこと。**分からない場合はリポジトリオーナーに確認してください（ユーザー名 `founder` は機密ではないため、そのまま使えます）。
+
 http://localhost:8000 にアクセス。
 
-機密情報（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）は `scripts/dev.py` が Google Secret Manager から取得して環境変数に入れるため、`.env` に手で書く必要はありません。詳細は `docs/secrets.md` を参照。
+`DATABASE_URL` を設定せずに起動すると、DBを使う画面（チャット・ソース管理など）で `RuntimeError` になります。エラーメッセージに proxy の起動が必要な旨が出ます。
+
+### 3. テストを実行するとき
+
+テストは本番と同じ PostgreSQL に対して実行します。**初回だけ**、テスト用の `founder_test` データベースを作成してください。
+
+```bash
+gcloud sql databases create founder_test --instance=founder-db --project=notebooklm-482403
+```
+
+作成済みかどうかは次で確認できます（一覧に `founder_test` があれば作成済み）。
+
+```bash
+gcloud sql databases list --instance=founder-db --project=notebooklm-482403
+```
+
+2回目以降は、`founder_test` を指して実行するだけです。
+
+```bash
+export DATABASE_URL="postgresql://founder:<PASSWORD>@localhost:5432/founder_test"
+uv run pytest
+```
+
+> **注意: 末尾を `founder`（本番用）にしないでください。**
+> `tests/conftest.py` はテスト1件ごとに `sources` / `chat_sessions` / `chat_messages` / `user_logins` の4テーブルを `TRUNCATE` します。接続先を間違えると、**開発中に入れたデータが消えます。**
+>
+> このため `tests/conftest.py` は、接続先のデータベース名に `test` が含まれない場合、テーブルを空にせずにテストを中断します。取り違えたときは1件も消さずに失敗するので、エラーメッセージに従って `DATABASE_URL` を直してください。
+
+CI（GitHub Actions）では `.github/workflows/ci.yml` が PostgreSQL の service コンテナを立て、`DATABASE_URL` を渡しています。proxy は使いません。
 
 ## ファイルの保存先
 

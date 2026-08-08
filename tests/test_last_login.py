@@ -17,7 +17,6 @@
 
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import httpx
 import pytest
@@ -27,14 +26,6 @@ from app import database, user_logins
 from app.main import app
 from app.routers.auth_router import require_admin
 from app.users import USERS_CSV_PATH
-
-
-@pytest.fixture
-def temp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """本番の data/founder.db を汚さないよう、使い捨てのDBに差し替える。"""
-    monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
-    database.init_db()
-    yield
 
 
 @pytest.fixture

@@ -88,6 +88,21 @@ QDRANT_API_KEY: Final[str] = os.getenv("QDRANT_API_KEY", "")
 #     .env.example には引き続き記載しておき、設定する場所だけ伝える。
 GCS_BUCKET_NAME: Final[str] = os.getenv("GCS_BUCKET_NAME", "")
 
+# Cloud SQL(PostgreSQL) への接続URL。値は環境変数から読み込む（コードに直書きしない）。
+#
+# 接続先は実行環境によって形が変わる:
+#     ローカル: Cloud SQL Auth Proxy を起動し、proxy が待ち受ける localhost へ繋ぐ
+#               （例: postgresql://ユーザー:パスワード@localhost:5432/DB名）
+#     Cloud Run: Unix ソケット経由で繋ぐ。ホスト名に /cloudsql/接続名 を指定する
+#               （例: postgresql://ユーザー:パスワード@/DB名?host=/cloudsql/接続名）
+# どちらもURLの文字列が違うだけなので、config はURLをそのまま受け取るだけにして
+# 環境ごとの分岐を持たない（分岐を持つと環境が増えるたびにここが膨らむ）。
+#
+# 未設定判定をここに置かず app/database.py に任せる理由:
+#     GCS_BUCKET_NAME と同じ考え方で、「未設定のときどう振る舞うか」は
+#     接続を実際に張るモジュールの責務。config は値を読むだけに留める。
+DATABASE_URL: Final[str] = os.getenv("DATABASE_URL", "")
+
 # 本番相当で未設定だと機能が動かなくなるが、起動は止めない設定。
 # JWT_SECRET_KEY と違い、漏洩ではなく可用性の問題なので扱いを分けている。
 #

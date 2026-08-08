@@ -10,7 +10,7 @@
     ログインのたびに変わる値だけをこのテーブルに分けて持つ。
 
 DB操作の流儀は既存コード（chat_history.py 等）に合わせている:
-    get_connection() で接続 → execute（?プレースホルダ）→ commit → close
+    get_connection() で接続 → execute（%sプレースホルダ）→ commit → close
 
 日時の形式:
     chat_sessions.started_at / sources.uploaded_at と同じく、
@@ -47,7 +47,7 @@ def record_login(user_id: str) -> str:
 
     セキュリティ:
         user_id はログインしてきた側から渡ってくる値なので、
-        必ず ? プレースホルダでバインドする（SQL文に文字列連結しない）。
+        必ず %s プレースホルダでバインドする（SQL文に文字列連結しない）。
         こうしておけば、値に何が入っていてもSQLとして解釈されない。
     """
     # 記録時刻を文字列で用意（DBのカラムはTEXT型なのでISO形式の文字列で持つ）
@@ -57,8 +57,8 @@ def record_login(user_id: str) -> str:
     conn.execute(
         """
         INSERT INTO user_logins (user_id, last_login_at)
-        VALUES (?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET last_login_at = excluded.last_login_at
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET last_login_at = excluded.last_login_at
         """,
         (user_id, last_login_at),
     )
@@ -84,7 +84,7 @@ def get_last_login_at(user_id: str) -> str | None:
     """
     conn = get_connection()
     row = conn.execute(
-        "SELECT last_login_at FROM user_logins WHERE user_id = ?",
+        "SELECT last_login_at FROM user_logins WHERE user_id = %s",
         (user_id,),
     ).fetchone()
     conn.close()

@@ -26,6 +26,13 @@ PROJECT_ID: Final[str] = "notebooklm-482403"
 
 # Secret Manager から取得して環境変数に入れる名前の一覧。
 # シークレット名と環境変数名はあえて同じにしている（対応表を持たずに済むため）。
+#
+# DATABASE_URL をまだ入れていない理由（Issue #65）:
+#     パスワードを含むため将来ここに加えるが、Secret Manager にまだ登録していない。
+#     未登録のまま列挙すると fetch_secret() が NotFound で RuntimeError を投げ、
+#     開発サーバーが起動できなくなる。
+#     登録は Issue #66（Cloud Run デプロイ）で行い、そのあとここに追加する。
+#     それまでローカルでは、起動前に自分で環境変数へ入れる（README.md を参照）。
 SECRET_NAMES: Final[tuple[str, ...]] = (
     "JWT_SECRET_KEY",
     "GEMINI_API_KEY",

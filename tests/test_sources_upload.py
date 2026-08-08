@@ -11,9 +11,9 @@
     Qdrant・本番のuploads/とDB）だけを差し替える。
 """
 
-import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -26,8 +26,8 @@ from app.routers.auth_router import require_admin
 
 
 @pytest.fixture
-def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """本番の uploads/ と data/founder.db を汚さないよう、使い捨ての置き場に差し替える。
+def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_db: None) -> Iterator[Path]:
+    """本番の uploads/ を汚さないよう、使い捨ての置き場に差し替える。
 
     出力:
         テスト用の uploads ディレクトリのパス（この中にだけ保存されるはず）
@@ -37,16 +37,15 @@ def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path
         「バケット未設定 かつ テスト環境」に固定してローカル保存の経路に倒す。
         実際のパスを組み立てるのは app/upload_paths.py の UPLOAD_DIR なので、
         向け直すのはそちら（storage は自分では持っていない）。
+
+        DBの用意は共通フィクスチャ temp_db に任せている
+        （テスト用PostgreSQLのテーブルを空にしてから始める）。
     """
     # 保存先を tmp_path 配下に向ける
     test_upload_dir = tmp_path / "uploads"
     monkeypatch.setattr(upload_paths, "UPLOAD_DIR", test_upload_dir)
     monkeypatch.setattr(storage, "GCS_BUCKET_NAME", "")
     monkeypatch.setattr(storage, "APP_ENV", "test")
-
-    # DBも使い捨てのファイルに向け、テーブルを作っておく
-    monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
-    database.init_db()
 
     # ベクトル化は本物だと Gemini と Qdrant に実通信してしまうので差し替える
     # （今回検証したいのは「どこに保存されるか」であって、ベクトル化の中身ではない）
@@ -77,11 +76,11 @@ def _upload(client: TestClient, file_name: str) -> httpx.Response:
     )
 
 
-def _saved_file_name(source_id: int) -> sqlite3.Row:
+def _saved_file_name(source_id: int) -> dict[str, Any]:
     """DBに記録された file_name（表示用の名前）と file_path（保存先）の行を取り出す。"""
     conn = database.get_connection()
     row = conn.execute(
-        "SELECT file_name, file_path FROM sources WHERE source_id = ?", (source_id,)
+        "SELECT file_name, file_path FROM sources WHERE source_id = %s", (source_id,)
     ).fetchone()
     conn.close()
     # 呼び出し元は登録済みの source_id しか渡さない。無ければテストの前提が崩れている
@@ -113,9 +112,7 @@ def test_危険なファイル名でもuploads配下から出ない(
 
     # uploads/ の外（tmp_path直下や親）にファイルが漏れ出していないこと
     漏れたファイル = [
-        p
-        for p in tmp_path.rglob("*")
-        if p.is_file() and not p.is_relative_to(upload_dir) and p.suffix != ".db"
+        p for p in tmp_path.rglob("*") if p.is_file() and not p.is_relative_to(upload_dir)
     ]
     assert 漏れたファイル == [], f"uploads/ の外にファイルが作られた: {漏れたファイル}"
 
