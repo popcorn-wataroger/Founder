@@ -80,7 +80,7 @@ async def list_user_sources(
         社員データ画面の「過去のソース」欄。その社員に紐づく資料だけを並べる。
 
     絞り込み条件について（権限ルール）:
-        WHERE に scope='individual' と owner_user_id=? の両方を必ず付ける。
+        WHERE に scope='individual' と owner_user_id=%s の両方を必ず付ける。
         - owner_user_id だけで絞ると、共通ソースは owner_user_id が NULL なので
           混ざりはしないが、条件が「持ち主」だけになり意図が読み取りづらい
         - scope だけで絞ると、他人の個別ソースまで出てしまう（絶対に不可）
@@ -95,7 +95,7 @@ async def list_user_sources(
         """
         SELECT source_id, file_name, file_type, scope, owner_user_id, uploaded_at
         FROM sources
-        WHERE scope = 'individual' AND owner_user_id = ?
+        WHERE scope = 'individual' AND owner_user_id = %s
         ORDER BY uploaded_at DESC
         """,
         (user_id,),
@@ -171,7 +171,7 @@ async def _rollback_source(source_id: int, file_path: str | None) -> None:
     """
     # DBの登録を取り消す
     conn = get_connection()
-    conn.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
+    conn.execute("DELETE FROM sources WHERE source_id = %s", (source_id,))
     conn.commit()
     conn.close()
 
@@ -276,7 +276,8 @@ async def upload_source(
 
     なぜ順番が「DB登録 → ベクトル化」なのか:
         Qdrantに保存するとき、どのソース由来かを示す source_id が必要になる。
-        source_id はDBに登録して初めて採番される（AUTOINCREMENT）ため、先にDB登録する。
+        source_id はDBに登録して初めて採番される
+        （GENERATED ALWAYS AS IDENTITY）ため、先にDB登録する。
     """
     validate_scope(scope, owner_user_id)
     if not file.filename:
@@ -328,11 +329,13 @@ async def upload_source(
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
     conn = get_connection()
+    # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
     cursor = conn.execute(
         """
         INSERT INTO sources
             (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING source_id
         """,
         (
             # file_name … 画面に表示する「元のファイル名」。表示専用で、パスの組み立てには使わない
@@ -347,11 +350,12 @@ async def upload_source(
             token["user_id"],
         ),
     )
+    row = cursor.fetchone()
     conn.commit()
-    source_id = cursor.lastrowid
+    source_id = row["source_id"] if row else None
     conn.close()
 
-    # INSERT が成功していれば lastrowid には必ず値が入る。
+    # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
     if source_id is None:
         raise RuntimeError(
@@ -416,19 +420,22 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
     conn = get_connection()
+    # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
     cursor = conn.execute(
         """
         INSERT INTO sources
             (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-        VALUES (?, 'url', ?, ?, ?, ?, ?)
+        VALUES (%s, 'url', %s, %s, %s, %s, %s)
+        RETURNING source_id
         """,
         (display_name, req.url, req.scope, req.owner_user_id, uploaded_at, token["user_id"]),
     )
+    row = cursor.fetchone()
     conn.commit()
-    source_id = cursor.lastrowid
+    source_id = row["source_id"] if row else None
     conn.close()
 
-    # INSERT が成功していれば lastrowid には必ず値が入る。
+    # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
     if source_id is None:
         raise RuntimeError(f"sources への INSERT で source_id が採番されませんでした url={req.url}")
@@ -590,7 +597,7 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
     """
     conn = get_connection()
     row = conn.execute(
-        "SELECT file_name, file_type, file_path FROM sources WHERE source_id = ?",
+        "SELECT file_name, file_type, file_path FROM sources WHERE source_id = %s",
         (source_id,),
     ).fetchone()
     conn.close()
@@ -658,7 +665,7 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
         ストレージ層を通すことで、読み出しと同じ検証（保存名の生成規則）を必ず経る。
     """
     conn = get_connection()
-    row = conn.execute("SELECT * FROM sources WHERE source_id = ?", (source_id,)).fetchone()
+    row = conn.execute("SELECT * FROM sources WHERE source_id = %s", (source_id,)).fetchone()
 
     if row is None:
         conn.close()
@@ -707,7 +714,7 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
 
     # 最後にDBの行を削除する
     conn = get_connection()
-    conn.execute("DELETE FROM sources WHERE source_id = ?", (source_id,))
+    conn.execute("DELETE FROM sources WHERE source_id = %s", (source_id,))
     conn.commit()
     conn.close()
 

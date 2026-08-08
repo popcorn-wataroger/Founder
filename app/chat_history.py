@@ -4,7 +4,7 @@
 取得系（get_messages / get_sessions / get_session / get_session_owner）をまとめている。
 
 DB操作の流儀は既存コード（sources_router.py 等）に合わせている:
-    get_connection() で接続 → execute（?プレースホルダ）→ commit → close
+    get_connection() で接続 → execute（%sプレースホルダ）→ commit → close
 """
 
 from datetime import datetime, timezone
@@ -25,25 +25,28 @@ def create_session(user_id: str, context_type: str = "general") -> int:
     処理:
         1. 現在時刻（UTC・ISO形式の文字列）を started_at として用意する
         2. chat_sessions に user_id, started_at, context_type を INSERT する
-        3. commit して確定し、自動採番された session_id を lastrowid から取得して返す
+        3. RETURNING で採番された session_id を受け取り、commit して確定して返す
     """
     # 開始時刻を文字列で用意（DBのカラムはTEXT型なのでISO形式の文字列で持つ）
     started_at = datetime.now(timezone.utc).isoformat()
 
     conn = get_connection()
+    # RETURNING で採番された session_id を受け取る（この後メッセージ記録で使う）。
+    # 値は commit の前に fetchone() で取り出す
     cursor = conn.execute(
         """
         INSERT INTO chat_sessions (user_id, started_at, context_type)
-        VALUES (?, ?, ?)
+        VALUES (%s, %s, %s)
+        RETURNING session_id
         """,
         (user_id, started_at, context_type),
     )
+    row = cursor.fetchone()
     conn.commit()
-    # 自動採番された session_id を取得（この後メッセージ記録で使う）
-    session_id = cursor.lastrowid
+    session_id = row["session_id"] if row else None
     conn.close()
 
-    # INSERT が成功していれば lastrowid には必ず値が入る。
+    # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
     if session_id is None:
         raise RuntimeError(
@@ -67,7 +70,7 @@ def add_message(session_id: int, role: str, content: str) -> int:
     処理:
         1. 現在時刻（UTC・ISO形式の文字列）を created_at として用意する
         2. chat_messages に session_id, role, content, created_at を INSERT する
-        3. commit して確定し、自動採番された message_id を返す
+        3. RETURNING で採番された message_id を受け取り、commit して確定して返す
 
     補足:
         referenced_sources（参照ソースID）はこの段階では扱わないため NULL のまま。
@@ -76,18 +79,21 @@ def add_message(session_id: int, role: str, content: str) -> int:
     created_at = datetime.now(timezone.utc).isoformat()
 
     conn = get_connection()
+    # RETURNING で採番された message_id を受け取る。値は commit の前に fetchone() で取り出す
     cursor = conn.execute(
         """
         INSERT INTO chat_messages (session_id, role, content, created_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
+        RETURNING message_id
         """,
         (session_id, role, content, created_at),
     )
+    row = cursor.fetchone()
     conn.commit()
-    message_id = cursor.lastrowid
+    message_id = row["message_id"] if row else None
     conn.close()
 
-    # INSERT が成功していれば lastrowid には必ず値が入る。
+    # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
     if message_id is None:
         raise RuntimeError(
@@ -117,7 +123,7 @@ def get_session(session_id: int) -> dict | None:
     """
     conn = get_connection()
     row = conn.execute(
-        "SELECT user_id, context_type FROM chat_sessions WHERE session_id = ?",
+        "SELECT user_id, context_type FROM chat_sessions WHERE session_id = %s",
         (session_id,),
     ).fetchone()
     conn.close()
@@ -183,14 +189,15 @@ def get_messages(session_id: int) -> list[dict]:
         """
         SELECT message_id, role, content, created_at, referenced_sources
         FROM chat_messages
-        WHERE session_id = ?
+        WHERE session_id = %s
         ORDER BY message_id
         """,
         (session_id,),
     ).fetchall()
     conn.close()
 
-    # sqlite3.Row のままだとJSONに変換できないので、辞書に直して返す
+    # get_connection() が dict_row を使っているため各行はすでに辞書だが、
+    # 「この関数はJSONにできる辞書を返す」ことを呼び出し元に約束するため dict() を通す
     return [dict(row) for row in rows]
 
 
@@ -225,7 +232,7 @@ def get_sessions(user_id: str) -> list[dict]:
         """
         SELECT session_id, started_at, context_type
         FROM chat_sessions
-        WHERE user_id = ?
+        WHERE user_id = %s
         ORDER BY session_id DESC
         """,
         (user_id,),
@@ -239,7 +246,7 @@ def get_sessions(user_id: str) -> list[dict]:
             """
             SELECT content
             FROM chat_messages
-            WHERE session_id = ? AND role = 'user'
+            WHERE session_id = %s AND role = 'user'
             ORDER BY message_id
             LIMIT 1
             """,
