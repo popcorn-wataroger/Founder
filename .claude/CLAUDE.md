@@ -43,7 +43,7 @@ uv run python scripts/dev.py
 確認アカウント：
 - 社員画面 → EMP001
 - 管理者画面 → ADMIN
-- パスワードは任意
+- パスワードは `password`（MVPの検証用。本番運用時は変更し、この記載も削除する）
 
 ## PR作成前チェック
 
