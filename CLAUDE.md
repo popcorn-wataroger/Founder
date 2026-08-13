@@ -34,19 +34,50 @@ uv add <package>
 ```
 Founder/
 ├── app/
-│   └── main.py              # FastAPI エントリーポイント
+│   ├── main.py               # FastAPI エントリーポイント。ルーター登録と起動時のDB初期化
+│   ├── config.py             # 環境変数の読み込みと検証（未設定なら起動を止める）
+│   ├── database.py           # Cloud SQL(PostgreSQL) への接続とテーブル作成
+│   ├── users.py              # 社員マスタ(data/users.csv)を起動時に読み込む
+│   ├── user_logins.py        # 最終ログイン日時の記録・取得（user_logins テーブル）
+│   ├── storage.py            # ファイルの保存・読み出し・削除。保存先(GCS/ローカル)を隠す
+│   ├── upload_paths.py       # 保存先パスの安全な組み立て（パストラバーサル対策）
+│   ├── vectorizer.py         # ソースの本文抽出とベクトル化
+│   ├── vector_store.py       # Qdrant への保存・検索
+│   ├── rag.py                # 質問→検索→Geminiで回答生成のまとめ役
+│   ├── chat_history.py       # チャットセッション・メッセージのDB操作
+│   └── routers/
+│       ├── auth_router.py    # ログイン・JWT発行・権限判定
+│       ├── chat_router.py    # チャットAPI（一括／SSEストリーミング）
+│       └── sources_router.py # ソースのアップロード・一覧・削除・ダウンロード
 ├── static/
 │   ├── css/style.css
 │   ├── js/
 │   │   ├── login.js
 │   │   ├── chat.js
 │   │   └── admin.js
-│   └── index.html            # UIプロトタイプ（叩き台）
+│   └── index.html            # 全画面のUIプロトタイプ
+├── scripts/
+│   └── dev.py                # Secret Manager から機密情報を取得して開発サーバーを起動
+├── tests/                    # pytest
+├── data/
+│   └── users.csv             # 社員マスタ（ダミーデータ）
 ├── docs/
 │   ├── github-workflow.md    # GitHub運用ルール
 │   ├── requirements.md       # 要件定義書（詳細版）
-│   └── ui-review.md          # UI確認方法
+│   ├── ui-review.md          # UI確認方法
+│   ├── secrets.md            # 機密情報の扱い
+│   ├── deploy.md             # Cloud Run へのデプロイ手順
+│   ├── ci-guide.md           # CI の構成
+│   └── vector-db-research.md # ベクトルDBの選定調査
+├── .claude/
+│   ├── CLAUDE.md             # 個人の作業ルール
+│   └── skills/               # PR作成・CI確認用のスキル
+├── .github/
+│   └── workflows/            # CI（ruff / mypy / pytest）・CodeQL・Qdrant死活監視
+├── Dockerfile
 ├── pyproject.toml
+├── uv.lock
+├── README.md
 ├── .env.example
 └── .gitignore
 ```
