@@ -3,10 +3,16 @@
 書き込み系（create_session / add_message）と、
 取得系（get_messages / get_sessions / get_session / get_session_owner）をまとめている。
 
-DB操作の流儀は既存コード（sources_router.py 等）に合わせている:
-    get_connection() で接続 → execute（%sプレースホルダ）→ commit → close
+DB操作の流儀:
+    with closing(get_connection()) as conn: で接続 → execute（%sプレースホルダ）→ commit
+    （commit は with ブロックの内側で行い、close は with を抜けるときに任せる）
+
+    closing を使う理由:
+        execute の途中で例外が出ても、with を抜けるときに必ず接続が閉じられるため。
+        Cloud SQL は同時接続数に上限があり、閉じ忘れが溜まると新規接続が拒否される。
 """
 
+from contextlib import closing
 from datetime import datetime, timezone
 
 from app.database import get_connection
@@ -30,21 +36,20 @@ def create_session(user_id: str, context_type: str = "general") -> int:
     # 開始時刻を文字列で用意（DBのカラムはTEXT型なのでISO形式の文字列で持つ）
     started_at = datetime.now(timezone.utc).isoformat()
 
-    conn = get_connection()
-    # RETURNING で採番された session_id を受け取る（この後メッセージ記録で使う）。
-    # 値は commit の前に fetchone() で取り出す
-    cursor = conn.execute(
-        """
-        INSERT INTO chat_sessions (user_id, started_at, context_type)
-        VALUES (%s, %s, %s)
-        RETURNING session_id
-        """,
-        (user_id, started_at, context_type),
-    )
-    row = cursor.fetchone()
-    conn.commit()
-    session_id = row["session_id"] if row else None
-    conn.close()
+    with closing(get_connection()) as conn:
+        # RETURNING で採番された session_id を受け取る（この後メッセージ記録で使う）。
+        # 値は commit の前に fetchone() で取り出す
+        cursor = conn.execute(
+            """
+            INSERT INTO chat_sessions (user_id, started_at, context_type)
+            VALUES (%s, %s, %s)
+            RETURNING session_id
+            """,
+            (user_id, started_at, context_type),
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        session_id = row["session_id"] if row else None
 
     # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
@@ -78,20 +83,19 @@ def add_message(session_id: int, role: str, content: str) -> int:
     # 記録時刻を文字列で用意
     created_at = datetime.now(timezone.utc).isoformat()
 
-    conn = get_connection()
-    # RETURNING で採番された message_id を受け取る。値は commit の前に fetchone() で取り出す
-    cursor = conn.execute(
-        """
-        INSERT INTO chat_messages (session_id, role, content, created_at)
-        VALUES (%s, %s, %s, %s)
-        RETURNING message_id
-        """,
-        (session_id, role, content, created_at),
-    )
-    row = cursor.fetchone()
-    conn.commit()
-    message_id = row["message_id"] if row else None
-    conn.close()
+    with closing(get_connection()) as conn:
+        # RETURNING で採番された message_id を受け取る。値は commit の前に fetchone() で取り出す
+        cursor = conn.execute(
+            """
+            INSERT INTO chat_messages (session_id, role, content, created_at)
+            VALUES (%s, %s, %s, %s)
+            RETURNING message_id
+            """,
+            (session_id, role, content, created_at),
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        message_id = row["message_id"] if row else None
 
     # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
@@ -121,12 +125,11 @@ def get_session(session_id: int) -> dict | None:
         1つの会話の中で参照範囲の違う発言が並んでしまうため、
         呼び出し元（_resolve_session）が両方を突き合わせて判定する。
     """
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT user_id, context_type FROM chat_sessions WHERE session_id = %s",
-        (session_id,),
-    ).fetchone()
-    conn.close()
+    with closing(get_connection()) as conn:
+        row = conn.execute(
+            "SELECT user_id, context_type FROM chat_sessions WHERE session_id = %s",
+            (session_id,),
+        ).fetchone()
 
     # 該当セッションが無ければ None を返す（呼び出し元で404にする）
     if row is None:
@@ -184,17 +187,16 @@ def get_messages(session_id: int) -> list[dict]:
         「誰が見てよいか」の判定は呼び出し元（ルーター）の責任とし、
         get_session_owner で持ち主を確認してから呼ぶこと。
     """
-    conn = get_connection()
-    rows = conn.execute(
-        """
-        SELECT message_id, role, content, created_at, referenced_sources
-        FROM chat_messages
-        WHERE session_id = %s
-        ORDER BY message_id
-        """,
-        (session_id,),
-    ).fetchall()
-    conn.close()
+    with closing(get_connection()) as conn:
+        rows = conn.execute(
+            """
+            SELECT message_id, role, content, created_at, referenced_sources
+            FROM chat_messages
+            WHERE session_id = %s
+            ORDER BY message_id
+            """,
+            (session_id,),
+        ).fetchall()
 
     # get_connection() が dict_row を使っているため各行はすでに辞書だが、
     # 「この関数はJSONにできる辞書を返す」ことを呼び出し元に約束するため dict() を通す
@@ -225,44 +227,42 @@ def get_sessions(user_id: str) -> list[dict]:
         この関数は user_id で絞り込むだけで、権限チェックはしない。
         「その user_id を指定してよい人か」の判定は呼び出し元（ルーター）の責任。
     """
-    conn = get_connection()
-
-    # 1. そのユーザーのセッションを新しい順（session_idの降順）に取り出す
-    session_rows = conn.execute(
-        """
-        SELECT session_id, started_at, context_type
-        FROM chat_sessions
-        WHERE user_id = %s
-        ORDER BY session_id DESC
-        """,
-        (user_id,),
-    ).fetchall()
-
     sessions: list[dict] = []
-    for row in session_rows:
-        # 2. そのセッションで最初にユーザーが送った質問を1件だけ取り出す
-        #    role='user' に絞るのは、AIの回答ではなく「何を聞いたか」を見出しにしたいため
-        first_message = conn.execute(
+
+    with closing(get_connection()) as conn:
+        # 1. そのユーザーのセッションを新しい順（session_idの降順）に取り出す
+        session_rows = conn.execute(
             """
-            SELECT content
-            FROM chat_messages
-            WHERE session_id = %s AND role = 'user'
-            ORDER BY message_id
-            LIMIT 1
+            SELECT session_id, started_at, context_type
+            FROM chat_sessions
+            WHERE user_id = %s
+            ORDER BY session_id DESC
             """,
-            (row["session_id"],),
-        ).fetchone()
+            (user_id,),
+        ).fetchall()
 
-        sessions.append(
-            {
-                "session_id": row["session_id"],
-                "started_at": row["started_at"],
-                "context_type": row["context_type"],
-                # メッセージが1件も無いセッション（回答生成に失敗した場合など）では None になる
-                "preview": first_message["content"] if first_message else None,
-            }
-        )
+        for row in session_rows:
+            # 2. そのセッションで最初にユーザーが送った質問を1件だけ取り出す
+            #    role='user' に絞るのは、AIの回答ではなく「何を聞いたか」を見出しにしたいため
+            first_message = conn.execute(
+                """
+                SELECT content
+                FROM chat_messages
+                WHERE session_id = %s AND role = 'user'
+                ORDER BY message_id
+                LIMIT 1
+                """,
+                (row["session_id"],),
+            ).fetchone()
 
-    conn.close()
+            sessions.append(
+                {
+                    "session_id": row["session_id"],
+                    "started_at": row["started_at"],
+                    "context_type": row["context_type"],
+                    # メッセージが1件も無いセッション（回答生成に失敗した場合など）では None になる
+                    "preview": first_message["content"] if first_message else None,
+                }
+            )
 
     return sessions
