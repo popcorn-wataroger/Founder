@@ -10,6 +10,7 @@
 このファイルを触らずに済み、テスト時に別のPostgreSQLへ向けることもできる。
 """
 
+from contextlib import closing
 from typing import Any
 
 import psycopg
@@ -48,53 +49,58 @@ def init_db() -> None:
     """データベースの初期化（テーブル作成）。
 
     入力: なし（接続先は get_connection 経由で DATABASE_URL から決まる）
-    処理: 4テーブル（sources / chat_sessions / chat_messages / user_logins）を
+    処理: with closing(get_connection()) as conn: で接続し、4テーブル
+          （sources / chat_sessions / chat_messages / user_logins）を
           CREATE TABLE IF NOT EXISTS で作り、commit して確定する
+          （commit は with ブロックの内側で行い、close は with を抜けるときに任せる）
     出力: なし（副作用としてテーブルが作られる）
     例外: DATABASE_URL が未設定・空のとき RuntimeError（get_connection が投げる）
+
+    closing を使う理由:
+        CREATE TABLE の途中で例外が出ても、with を抜けるときに必ず接続が閉じられるため。
+        Cloud SQL は同時接続数に上限があり、閉じ忘れが溜まると新規接続が拒否される。
 
     IF NOT EXISTS を付けているため、既にテーブルがある状態で呼んでも何も起きない。
     アプリの起動時（app/main.py の lifespan）とテストの準備で毎回呼ばれる。
     """
-    conn = get_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sources (
-            source_id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            file_name    TEXT NOT NULL,
-            file_type    TEXT NOT NULL,
-            file_path    TEXT NOT NULL,
-            scope        TEXT NOT NULL DEFAULT 'common',
-            owner_user_id TEXT,
-            uploaded_at  TEXT NOT NULL,
-            uploaded_by  TEXT NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS chat_sessions (
-            session_id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            user_id      TEXT NOT NULL,
-            started_at   TEXT NOT NULL,
-            context_type TEXT NOT NULL DEFAULT 'general'
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            message_id         INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            session_id         INTEGER NOT NULL,
-            role               TEXT NOT NULL,
-            content            TEXT NOT NULL,
-            created_at         TEXT NOT NULL,
-            referenced_sources TEXT,
-            FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id)
-        )
-    """)
-    # 最終ログイン日時。社員マスタ（data/users.csv）はGit管理下で読み取り専用のため、
-    # ログインのたびに変わる値だけをこちらに持つ（1社員1行）
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_logins (
-            user_id       TEXT PRIMARY KEY,
-            last_login_at TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with closing(get_connection()) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sources (
+                source_id    INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                file_name    TEXT NOT NULL,
+                file_type    TEXT NOT NULL,
+                file_path    TEXT NOT NULL,
+                scope        TEXT NOT NULL DEFAULT 'common',
+                owner_user_id TEXT,
+                uploaded_at  TEXT NOT NULL,
+                uploaded_by  TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                session_id   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                user_id      TEXT NOT NULL,
+                started_at   TEXT NOT NULL,
+                context_type TEXT NOT NULL DEFAULT 'general'
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                message_id         INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                session_id         INTEGER NOT NULL,
+                role               TEXT NOT NULL,
+                content            TEXT NOT NULL,
+                created_at         TEXT NOT NULL,
+                referenced_sources TEXT,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id)
+            )
+        """)
+        # 最終ログイン日時。社員マスタ（data/users.csv）はGit管理下で読み取り専用のため、
+        # ログインのたびに変わる値だけをこちらに持つ（1社員1行）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_logins (
+                user_id       TEXT PRIMARY KEY,
+                last_login_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()

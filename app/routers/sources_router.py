@@ -1,6 +1,7 @@
 import logging
 import re
 import uuid
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -56,9 +57,8 @@ _CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 @router.get("")
 async def list_sources(token: dict = Depends(require_admin)):
     """ソース一覧を返す"""
-    conn = get_connection()
-    rows = conn.execute("SELECT * FROM sources ORDER BY uploaded_at DESC").fetchall()
-    conn.close()
+    with closing(get_connection()) as conn:
+        rows = conn.execute("SELECT * FROM sources ORDER BY uploaded_at DESC").fetchall()
     return [dict(row) for row in rows]
 
 
@@ -90,17 +90,16 @@ async def list_user_sources(
         file_path はサーバー内部の保存先パスで、画面には不要。
         外に出すと保存場所の構造が分かってしまうため、返す列を明示的に選んでいる。
     """
-    conn = get_connection()
-    rows = conn.execute(
-        """
-        SELECT source_id, file_name, file_type, scope, owner_user_id, uploaded_at
-        FROM sources
-        WHERE scope = 'individual' AND owner_user_id = %s
-        ORDER BY uploaded_at DESC
-        """,
-        (user_id,),
-    ).fetchall()
-    conn.close()
+    with closing(get_connection()) as conn:
+        rows = conn.execute(
+            """
+            SELECT source_id, file_name, file_type, scope, owner_user_id, uploaded_at
+            FROM sources
+            WHERE scope = 'individual' AND owner_user_id = %s
+            ORDER BY uploaded_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
 
     return [dict(row) for row in rows]
 
@@ -170,10 +169,9 @@ async def _rollback_source(source_id: int, file_path: str | None) -> None:
         run_in_threadpool で別スレッドへ逃がすため、この関数も async にしている。
     """
     # DBの登録を取り消す
-    conn = get_connection()
-    conn.execute("DELETE FROM sources WHERE source_id = %s", (source_id,))
-    conn.commit()
-    conn.close()
+    with closing(get_connection()) as conn:
+        conn.execute("DELETE FROM sources WHERE source_id = %s", (source_id,))
+        conn.commit()
 
     # 保存した実体も消す（ファイルが無い登録＝URLの場合はスキップ）
     #
@@ -328,32 +326,32 @@ async def upload_source(
 
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
-    conn = get_connection()
-    # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
-    cursor = conn.execute(
-        """
-        INSERT INTO sources
-            (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        RETURNING source_id
-        """,
-        (
-            # file_name … 画面に表示する「元のファイル名」。表示専用で、パスの組み立てには使わない
-            # file_path … 読み出しに使うキー。上で生成した安全な名前だけから作られている
-            # 「見せる名前」と「保存先の名前」を分けることでパストラバーサルを断つ
-            file.filename,
-            file_type,
-            file_path,
-            scope,
-            owner_user_id,
-            uploaded_at,
-            token["user_id"],
-        ),
-    )
-    row = cursor.fetchone()
-    conn.commit()
-    source_id = row["source_id"] if row else None
-    conn.close()
+    with closing(get_connection()) as conn:
+        # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
+        cursor = conn.execute(
+            """
+            INSERT INTO sources
+                (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING source_id
+            """,
+            (
+                # file_name … 画面に表示する「元のファイル名」。
+                #              表示専用で、パスの組み立てには使わない
+                # file_path … 読み出しに使うキー。上で生成した安全な名前だけから作られている
+                # 「見せる名前」と「保存先の名前」を分けることでパストラバーサルを断つ
+                file.filename,
+                file_type,
+                file_path,
+                scope,
+                owner_user_id,
+                uploaded_at,
+                token["user_id"],
+            ),
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        source_id = row["source_id"] if row else None
 
     # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
@@ -419,21 +417,20 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
     display_name = req.file_name or req.url
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
-    conn = get_connection()
-    # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
-    cursor = conn.execute(
-        """
-        INSERT INTO sources
-            (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-        VALUES (%s, 'url', %s, %s, %s, %s, %s)
-        RETURNING source_id
-        """,
-        (display_name, req.url, req.scope, req.owner_user_id, uploaded_at, token["user_id"]),
-    )
-    row = cursor.fetchone()
-    conn.commit()
-    source_id = row["source_id"] if row else None
-    conn.close()
+    with closing(get_connection()) as conn:
+        # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
+        cursor = conn.execute(
+            """
+            INSERT INTO sources
+                (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
+            VALUES (%s, 'url', %s, %s, %s, %s, %s)
+            RETURNING source_id
+            """,
+            (display_name, req.url, req.scope, req.owner_user_id, uploaded_at, token["user_id"]),
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        source_id = row["source_id"] if row else None
 
     # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
@@ -595,12 +592,11 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
         保存先の名前を作り直す。検証を通らない値（形式の違う古いデータなど）は
         ValueError になるので、その場合は404として扱う。
     """
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT file_name, file_type, file_path FROM sources WHERE source_id = %s",
-        (source_id,),
-    ).fetchone()
-    conn.close()
+    with closing(get_connection()) as conn:
+        row = conn.execute(
+            "SELECT file_name, file_type, file_path FROM sources WHERE source_id = %s",
+            (source_id,),
+        ).fetchone()
 
     if row is None:
         raise HTTPException(status_code=404, detail="ソースが見つかりません")
@@ -664,14 +660,11 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
         削除は「消す」操作なので、想定外のパスが渡ると別のファイルを消しうる。
         ストレージ層を通すことで、読み出しと同じ検証（保存名の生成規則）を必ず経る。
     """
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM sources WHERE source_id = %s", (source_id,)).fetchone()
+    with closing(get_connection()) as conn:
+        row = conn.execute("SELECT * FROM sources WHERE source_id = %s", (source_id,)).fetchone()
 
     if row is None:
-        conn.close()
         raise HTTPException(status_code=404, detail="ソースが見つかりません")
-
-    conn.close()
 
     # Qdrantから、このソース由来のチャンクをすべて削除する
     # （消し残すと、削除済みの資料をAIが回答の根拠にし続けてしまう）
@@ -713,9 +706,8 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
             )
 
     # 最後にDBの行を削除する
-    conn = get_connection()
-    conn.execute("DELETE FROM sources WHERE source_id = %s", (source_id,))
-    conn.commit()
-    conn.close()
+    with closing(get_connection()) as conn:
+        conn.execute("DELETE FROM sources WHERE source_id = %s", (source_id,))
+        conn.commit()
 
     return {"success": True, "source_id": source_id}
