@@ -38,11 +38,11 @@ Cloud Run はデプロイ設定で「このシークレットをこの環境変�
 | `QDRANT_API_KEY` | Qdrant Cloud の認証 | `scripts/dev.py` が取得 | 必要 |
 | `APP_ENV` | 実行環境の識別子 | `scripts/dev.py` が `local` を設定 | `production` など |
 | `GCS_BUCKET_NAME` | GCSバケット名 | — | 機密ではない。環境変数のままでよい |
-| `DATABASE_URL` | Cloud SQL の接続情報 | 自分で環境変数に入れる | **Secret Manager 管理対象**（登録済み） |
+| `DATABASE_URL` | Cloud SQL の接続情報 | `scripts/dev.py` が取得し、ローカル用の形式に変換して設定 | **Secret Manager 管理対象**（登録済み） |
 
-Secret Manager の管理対象は上の5つです。`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` の4つは `scripts/dev.py` の `SECRET_NAMES` に列挙されています。シークレット名と環境変数名は同じに揃えています。
+Secret Manager の管理対象は上の5つで、いずれも `scripts/dev.py` が取得します。ただし `SECRET_NAMES`（取得した値をそのまま環境変数に入れる一覧）に列挙しているのは `JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` の4つだけです。`DATABASE_URL` はローカル用への形式変換が必要なため、この一覧とは別に扱っています。シークレット名と環境変数名は同じに揃えています。
 
-### DATABASE_URL の現状（Issue #65 / #66）
+### DATABASE_URL の扱い（Issue #82）
 
 `DATABASE_URL` はパスワードを含むため Secret Manager の管理対象です。**Issue #66（Cloud Run デプロイ）で登録済みで、バージョン1が有効です。**Cloud SQL インスタンスの接続情報が確定するまで登録できなかったため、他の4つより後になりました。
 
@@ -52,16 +52,18 @@ Secret Manager の管理対象は上の5つです。`JWT_SECRET_KEY` / `GEMINI_A
 postgresql://founder:<パスワード>@/founder?host=/cloudsql/notebooklm-482403:asia-northeast1:founder-db
 ```
 
-**ただし `scripts/dev.py` の `SECRET_NAMES` にはまだ追加していません。**理由は2つあります。
+この形式はローカルでは使えません。ローカルは `cloud-sql-proxy` が待ち受ける `localhost:5432` に繋ぐためです。そこで `scripts/dev.py` は、取得した値を `to_local_database_url()` でローカル用に変換してから環境変数に入れます。ユーザー名・パスワード・DB名はそのまま引き継ぎ、接続先の指定だけを差し替える処理です。
 
-1. 登録されている値は Cloud Run 用の形式で、ローカル（`cloud-sql-proxy` 経由で `localhost:5432` に繋ぐ形）とは URL の形が違う。そのまま取得してもローカルでは使えない
-2. 追加するとローカルの起動手順が変わるため、動作確認をやり直す必要がある
-
-このため `SECRET_NAMES` への追加は別Issueとして扱います。ローカル開発では引き続き、自分で環境変数に入れてから起動します。
+そのため、`DATABASE_URL` を自分で環境変数に入れる必要はありません。次のコマンドだけで起動できます。
 
 ```bash
-export DATABASE_URL="postgresql://founder:<PASSWORD>@localhost:5432/founder"
 uv run python scripts/dev.py
+```
+
+テストを実行するときは `scripts/test.py` を使います。こちらは同じ変換に加えてデータベース名を `founder_test` に差し替え、**本当にテスト用DBを指しているかを確かめてから** pytest を起動します。テストは接続先のテーブルを `TRUNCATE` するため、開発用DBを指したまま実行されないようにするためです。
+
+```bash
+uv run python scripts/test.py
 ```
 
 手順の全体（cloud-sql-proxy の起動を含む）は `README.md` の「ローカル開発の起動手順」を参照してください。
@@ -164,14 +166,14 @@ http://localhost:8000 を開き、EMP001（社員画面）と ADMIN（管理者�
 
 ### `.env` は必要か
 
-この手順では作りません。`app/config.py` が読む環境変数のうち `APP_ENV` / `JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` の5つは、すべて `scripts/dev.py` が用意するためです。
+この手順では作りません。`app/config.py` が読む環境変数のうち `APP_ENV` / `JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` / `DATABASE_URL` の6つは、すべて `scripts/dev.py` が用意するためです。
 
-`app/config.py` はこのほかに `GCS_BUCKET_NAME` と `DATABASE_URL` も読みます。どちらも `scripts/dev.py` は用意しないため、必要なときは自分で環境変数に入れます。
+`app/config.py` はこのほかに `GCS_BUCKET_NAME` も読みます。これは `scripts/dev.py` が用意しないため、自分で環境変数に入れる必要があるのはこの1つだけです。
 
 | 変数 | 読んでいる場所 | 未設定のときの挙動 |
 |---|---|---|
 | `GCS_BUCKET_NAME` | `app/storage.py`（Issue #64） | ローカルの `uploads/` に保存する（`APP_ENV` が `local` / `test` のときだけ。それ以外は起動しない） |
-| `DATABASE_URL` | `app/database.py`（Issue #65） | DBを使う画面で `RuntimeError` になる（上の「[DATABASE_URL の現状](#database_url-の現状issue-65)」を参照） |
+| `DATABASE_URL` | `app/database.py`（Issue #65） | `scripts/dev.py` が設定するため通常は未設定にならない。`dev.py` を通さずに起動した場合はDBを使う画面で `RuntimeError` になる（上の「[DATABASE_URL の扱い](#database_url-の扱いissue-82)」を参照） |
 
 `.env.example` には残り2つ `APP_DEBUG` / `QDRANT_COLLECTION` もありますが、こちらは**現時点でコードから読まれていません**（将来使う予定があるため名前だけ残してあります。設定しても現在の挙動は変わりません）。
 
