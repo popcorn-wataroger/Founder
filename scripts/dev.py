@@ -15,12 +15,24 @@
 from __future__ import annotations
 
 import os
-import sys
-from typing import Final
 
-from google.api_core import exceptions as gcp_exceptions
-from google.auth import exceptions as auth_exceptions
-from google.cloud import secretmanager
+# grpc の DNS 解決を OS 側に任せる。
+#
+# grpc は既定で内蔵リゾルバ(c-ares)を使うが、DNS サーバーが IPv6 の
+# リンクローカルアドレス(fe80::...%en0)しか無い環境では、末尾のスコープID
+# (%en0)を解釈できず "Could not contact DNS servers" で失敗する。
+# native を指定すると OS の名前解決を使うため、この環境でも解決できる。
+#
+# grpc は import 時にこの設定を読むため、google.cloud のインポートより
+# 前に設定する必要がある。そのため import の位置を意図的に分けている。
+os.environ.setdefault("GRPC_DNS_RESOLVER", "native")
+
+import sys  # noqa: E402
+from typing import Final  # noqa: E402
+
+from google.api_core import exceptions as gcp_exceptions  # noqa: E402
+from google.auth import exceptions as auth_exceptions  # noqa: E402
+from google.cloud import secretmanager  # noqa: E402
 
 PROJECT_ID: Final[str] = "notebooklm-482403"
 
