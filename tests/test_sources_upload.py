@@ -186,3 +186,38 @@ def test_DB登録に失敗したら保存済みファイルが残らない(
     # 保存済みファイルが消えていること（孤児ファイルが残らない）
     残ったファイル = [p for p in upload_dir.rglob("*") if p.is_file()]
     assert 残ったファイル == [], f"DB登録に失敗したのにファイルが残っている: {残ったファイル}"
+
+
+def test_後始末の失敗で元の例外が置き換わらない(
+    client: TestClient, upload_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """後始末（ファイル削除）が失敗しても、元のDB登録失敗が外へ伝わることを確かめる。
+
+    なぜこのテストが要るか:
+        _cleanup_orphan_file は削除の失敗を握ってログに残すだけにしている。
+        ここで例外を投げ直してしまうと、呼び出し側が伝えたかった原因
+        （DB登録の失敗）が削除の失敗で塗り潰され、調査の入口が変わってしまう。
+        「握る」という設計判断が実際に効いているかを、ここで固定する。
+
+    どうやって二重に失敗させるか:
+        get_connection を例外を投げる関数に差し替えてDB登録を失敗させ、
+        さらに storage.delete も例外を投げる関数に差し替える。
+        これで「DB登録に失敗し、その後始末にも失敗した」状況になる。
+
+    確かめること:
+        外へ出てくる例外が、後始末の OSError ではなく
+        元の RuntimeError（DB接続の失敗）であること。
+    """
+
+    def fail_get_connection() -> None:
+        raise RuntimeError("DB接続に失敗しました（テスト用）")
+
+    def fail_delete(file_path: str) -> None:
+        raise OSError("ファイル削除に失敗しました（テスト用）")
+
+    monkeypatch.setattr(sources_router, "get_connection", fail_get_connection)
+    monkeypatch.setattr(storage, "delete", fail_delete)
+
+    # 後始末の OSError ではなく、元の RuntimeError が外へ出てくるのが正しい
+    with pytest.raises(RuntimeError, match="DB接続に失敗しました（テスト用）"):
+        _upload(client, "就業規則.txt")
