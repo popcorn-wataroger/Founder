@@ -1,9 +1,16 @@
-"""アップロード済みファイルの「安全な保存先の名前」を組み立て直す専用モジュール。
+"""アップロード時の「安全な保存先の名前」を組み立て／組み立て直す専用モジュール。
 
 なぜ独立したモジュールにするか:
     DBの file_path から実体を読む処理は複数箇所にある（本文抽出・ダウンロード・削除）。
     同じ安全ルールを各所に書き写すと、保存名の形式を変えたときに追従漏れが起き、
     片方だけ穴が開く。判定ルールを1箇所に集約して「唯一の正解」にする。
+
+なぜ「作る側」もここに置くか:
+    保存名を作る処理（build_save_name）が別のファイルにあると、
+    片方だけ形式を変えたときにアップロードは成功するのにダウンロードが404になる、
+    という気づきにくい不具合が起きる。
+    作る側と検証する側を同じファイルに置き、同じ定数（EXTENSION_BY_TYPE）から
+    組み立てることで、そもそもズレようがない状態にする。
 
 このモジュールの基本方針（パストラバーサル対策）:
     「検査だけして元の値を使う」形は取らない。
@@ -20,23 +27,96 @@
 """
 
 import re
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import UPLOAD_DIR
 
+# ソース種別 → 保存に使う拡張子の対応表。
+# なぜ辞書で持つか（パストラバーサル対策）:
+#     保存パスに載せる拡張子は、ユーザーのファイル名から切り出した文字列ではなく
+#     「コード側が持つ定数」から引く。こうすると保存パスを構成する文字列に
+#     ユーザー入力が1文字も混ざらない。
+#     入口の ALLOWED_EXTENSIONS チェック（値を変えない検査）だけでは、
+#     静的解析から見て「ユーザー入力がパスまで届いている」状態が続いてしまうため、
+#     値そのものを定数に置き換えて汚染を断ち切る。
+# なぜ sources_router ではなくここに置くか:
+#     保存名を作る build_save_name と、保存名を検証する SAFE_FILE_NAME_PATTERN の
+#     両方がこの拡張子定義を使う。生成側と検証側で同じ定義を参照させるため、
+#     置き場所をこのモジュールに集約する。
+EXTENSION_BY_TYPE = {"pdf": ".pdf", "docx": ".docx", "pptx": ".pptx", "txt": ".txt"}
+
 # アップロード時にサーバー側が組み立てる保存ファイル名の形式。
-# sources_router の save_name = f"{timestamp}_{uuid4}{拡張子}" に対応する
+# build_save_name の save_name = f"{timestamp}_{uuid4}{拡張子}" に対応する
 #   timestamp … %Y%m%d%H%M%S%f の20桁
 #   uuid4     … 8-4-4-4-12 のハイフン付き36文字
+#   拡張子    … EXTENSION_BY_TYPE の値のいずれか
+#
+# なぜ拡張子部分を手書きせず自動生成するか:
+#     ここに拡張子をベタ書きすると、対応形式を増やしたときに
+#     EXTENSION_BY_TYPE だけ直してこちらを直し忘れる、という取りこぼしが起きる。
+#     その場合アップロードは成功するのに、ダウンロードや削除で
+#     sanitize_upload_name が弾いて404になり、原因が非常に追いづらい。
+#     定義を EXTENSION_BY_TYPE 1箇所にして、生成と検証がズレないようにする。
+#
+# re.escape を通す理由:
+#     拡張子には '.' が含まれる。正規表現の '.' は「任意の1文字」を意味するため、
+#     そのまま並べると '.pdf' が 'Xpdf' にも一致してしまう。
+#     re.escape で '\\.pdf' にエスケープし、文字どおりのドットとして扱わせる。
+_EXTENSION_PATTERN = "|".join(re.escape(suffix) for suffix in EXTENSION_BY_TYPE.values())
+
 SAFE_FILE_NAME_PATTERN = re.compile(
     r"[0-9]{20}_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    r"\.(?:pdf|docx|pptx|txt)"
+    rf"(?:{_EXTENSION_PATTERN})"
 )
 
 # GCSのオブジェクト名の先頭に必ず付ける、コード側が持つ定数のプレフィックス。
 # バケット直下に散らかさず「アップロード由来のファイル置き場」をまとめる目的と、
 # オブジェクト名の材料を定数側に寄せる目的を兼ねる。
 GCS_OBJECT_PREFIX = "sources/"
+
+
+def build_save_name(file_type: str) -> str:
+    """アップロードされたファイルの保存名を、サーバー側の値だけで組み立てて返す。
+
+    入力:
+        file_type … ソース種別（'pdf' / 'docx' / 'pptx' / 'txt'）。
+                    呼び出し元が拡張子チェックを通した値を渡す想定
+
+    処理:
+        timestamp（UTCの %Y%m%d%H%M%S%f = 20桁）と uuid4 と拡張子を連結する
+
+    出力:
+        保存名の文字列（例: '20260101000000000000_<uuid4>.pdf'）。
+        SAFE_FILE_NAME_PATTERN に必ず fullmatch する
+
+    例外:
+        ValueError … file_type が EXTENSION_BY_TYPE に無い場合。
+                     保存名に載せる拡張子を定数から決められない以上、
+                     推測して代用せず、その場で止める
+                     （このモジュールの「想定外の入力は ValueError」に揃えている）
+
+    保存名にユーザーのファイル名を一切使わない理由（パストラバーサル対策）:
+        アップロード時の file.filename はクライアントが自由に決められる文字列で、
+        '../../app/main.py' や '/etc/cron.d/evil' のような値も送りつけられる。
+        これをそのまま連結すると uploads/ の外へ書き込めてしまう
+        （Path の / は「安全な結合」ではなく単なる連結で、右が絶対パスなら左を捨てる）。
+        GCSでも同じで、'../' を含む名前は意図しない場所を指しうる。
+
+    各パーツの役割:
+        timestamp   … 人が見て「いつの投入か」を追えるように
+        uuid4       … 同時アップロードでも名前が衝突しないように
+        safe_suffix … ユーザーのファイル名から切り出した文字列ではなく、
+                      EXTENSION_BY_TYPE が持つ定数を使う。これで保存名を組み立てる
+                      材料が全てコード側の値になり、ユーザー入力が1文字も混ざらない
+    """
+    if file_type not in EXTENSION_BY_TYPE:
+        raise ValueError(f"unsupported file type: {file_type!r}")
+
+    safe_suffix = EXTENSION_BY_TYPE[file_type]
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    return f"{timestamp}_{uuid.uuid4()}{safe_suffix}"
 
 
 def sanitize_upload_name(raw_path: str) -> str:
