@@ -54,7 +54,7 @@ postgresql://founder:<パスワード>@/founder?host=/cloudsql/notebooklm-482403
 
 この形式はローカルでは使えません。ローカルは `cloud-sql-proxy` が待ち受ける `localhost:5432` に繋ぐためです。そこで `scripts/dev.py` は、取得した値を `to_local_database_url()` でローカル用に変換してから環境変数に入れます。ユーザー名・パスワード・DB名はそのまま引き継ぎ、接続先の指定だけを差し替える処理です。
 
-そのため、`DATABASE_URL` を自分で環境変数に入れる必要はありません。次のコマンドだけで起動できます。
+そのため、`DATABASE_URL` を自分で環境変数に入れる必要はありません。次のコマンドだけで起動できます。ただし変換後の接続先は `localhost:5432` なので、別ターミナルで `cloud-sql-proxy` を起動したままにしておく必要があります（下の `scripts/test.py` も同じです）。
 
 ```bash
 uv run python scripts/dev.py
