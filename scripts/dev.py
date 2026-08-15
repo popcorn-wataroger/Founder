@@ -156,11 +156,9 @@ def load_secrets_into_env() -> None:
 
     # DATABASE_URL は形式変換が必要なため、SECRET_NAMES とは別に扱う。
     # 既に環境変数へ入っている場合は上書きしない
-    #（作業者が意図的に別のDBを指定しているときに、その指定を尊重するため）。
+    # （作業者が意図的に別のDBを指定しているときに、その指定を尊重するため）。
     if not os.environ.get("DATABASE_URL"):
-        os.environ["DATABASE_URL"] = to_local_database_url(
-            fetch_secret(client, "DATABASE_URL")
-        )
+        os.environ["DATABASE_URL"] = to_local_database_url(fetch_secret(client, "DATABASE_URL"))
         fetched_count += 1
 
     # 値そのものは絶対に出さない。出してよいのは「何件取得できたか」だけ。
