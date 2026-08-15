@@ -151,3 +151,73 @@ def test_正常なファイル名は保存でき元の名前がDBに残る(clien
     assert 保存パス.suffix == ".txt"
     assert "就業規則" not in 保存パス.name
     assert 保存パス.exists()  # 実ファイルがちゃんと書けている
+
+
+def test_DB登録に失敗したら保存済みファイルが残らない(
+    client: TestClient, upload_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DB登録が失敗したとき、先に保存したファイルが消えることを確かめる。
+
+    なぜこのテストが要るか:
+        upload_source は「ファイル保存 → DB登録 → ベクトル化」の順で進む。
+        DB登録が失敗すると、保存済みのファイルだけがストレージに残る。
+        DBに行が無いので画面にも出ず、削除する手段も無い孤児ファイルになる。
+
+    どうやってDB登録だけを失敗させるか:
+        sources_router が使う get_connection を、呼ぶと必ず例外を投げる関数に
+        差し替える。ファイル保存（storage.save）はその前に終わっているので、
+        「保存は成功したがDB登録で落ちた」状況をそのまま再現できる。
+
+    確かめること:
+        1. 例外が外へ伝わる（後始末が元の原因を握りつぶしていない）
+        2. uploads/ にファイルが1つも残っていない
+    """
+
+    def fail_get_connection() -> None:
+        raise RuntimeError("DB接続に失敗しました（テスト用）")
+
+    monkeypatch.setattr(sources_router, "get_connection", fail_get_connection)
+
+    # 後始末が元の例外を上書きしていないこと。
+    # DB接続の失敗がそのまま外へ出てくるのが正しい
+    with pytest.raises(RuntimeError, match="DB接続に失敗しました（テスト用）"):
+        _upload(client, "就業規則.txt")
+
+    # 保存済みファイルが消えていること（孤児ファイルが残らない）
+    残ったファイル = [p for p in upload_dir.rglob("*") if p.is_file()]
+    assert 残ったファイル == [], f"DB登録に失敗したのにファイルが残っている: {残ったファイル}"
+
+
+def test_後始末の失敗で元の例外が置き換わらない(
+    client: TestClient, upload_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """後始末（ファイル削除）が失敗しても、元のDB登録失敗が外へ伝わることを確かめる。
+
+    なぜこのテストが要るか:
+        _cleanup_orphan_file は削除の失敗を握ってログに残すだけにしている。
+        ここで例外を投げ直してしまうと、呼び出し側が伝えたかった原因
+        （DB登録の失敗）が削除の失敗で塗り潰され、調査の入口が変わってしまう。
+        「握る」という設計判断が実際に効いているかを、ここで固定する。
+
+    どうやって二重に失敗させるか:
+        get_connection を例外を投げる関数に差し替えてDB登録を失敗させ、
+        さらに storage.delete も例外を投げる関数に差し替える。
+        これで「DB登録に失敗し、その後始末にも失敗した」状況になる。
+
+    確かめること:
+        外へ出てくる例外が、後始末の OSError ではなく
+        元の RuntimeError（DB接続の失敗）であること。
+    """
+
+    def fail_get_connection() -> None:
+        raise RuntimeError("DB接続に失敗しました（テスト用）")
+
+    def fail_delete(file_path: str) -> None:
+        raise OSError("ファイル削除に失敗しました（テスト用）")
+
+    monkeypatch.setattr(sources_router, "get_connection", fail_get_connection)
+    monkeypatch.setattr(storage, "delete", fail_delete)
+
+    # 後始末の OSError ではなく、元の RuntimeError が外へ出てくるのが正しい
+    with pytest.raises(RuntimeError, match="DB接続に失敗しました（テスト用）"):
+        _upload(client, "就業規則.txt")

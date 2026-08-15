@@ -190,6 +190,38 @@ async def _rollback_source(source_id: int, file_path: str | None) -> None:
             )
 
 
+async def _cleanup_orphan_file(file_path: str) -> None:
+    """DB登録に失敗したとき、保存済みのファイルだけを削除する。
+
+    入力:
+        file_path … 保存したファイルのキー（storage が解釈できる値）
+
+    出力:
+        なし
+
+    _rollback_source との違い:
+        _rollback_source は「DB登録に成功したあと」の失敗を扱うので、
+        DBの行を消してからファイルを消す。
+        こちらは「DB登録そのものに失敗した」場合なので、消すべき行が存在しない。
+        DELETE を投げると、まだ他の誰も知らない source_id を
+        当てずっぽうで消しにいくことになるため、ファイルだけを対象にする。
+
+    なぜ例外を投げ直さないか:
+        この関数は、DB登録が失敗したという本来のエラーの後始末として呼ばれる。
+        ここで例外が漏れると、呼び出し側が伝えたかった原因（DB登録の失敗）が
+        削除の失敗で塗り潰され、調査の入口が変わってしまう。
+        残るのは参照されない実体だけなので、手作業で消せるようログに残して続行する。
+    """
+    try:
+        await run_in_threadpool(storage.delete, file_path)
+    except Exception:
+        logger.exception(
+            "DB登録の失敗後、保存済みファイルの削除に失敗しました。"
+            "参照されない実体が残っている可能性があります file_path=%s",
+            _sanitize_for_log(file_path),
+        )
+
+
 def _vectorize_and_save(
     source_id: int,
     path: str,
@@ -308,39 +340,51 @@ async def upload_source(
 
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
-    with closing(get_connection()) as conn:
-        # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
-        cursor = conn.execute(
-            """
-            INSERT INTO sources
-                (file_name, file_type, file_path, scope, owner_user_id, uploaded_at, uploaded_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING source_id
-            """,
-            (
-                # file_name … 画面に表示する「元のファイル名」。
-                #              表示専用で、パスの組み立てには使わない
-                # file_path … 読み出しに使うキー。上で生成した安全な名前だけから作られている
-                # 「見せる名前」と「保存先の名前」を分けることでパストラバーサルを断つ
-                file.filename,
-                file_type,
-                file_path,
-                scope,
-                owner_user_id,
-                uploaded_at,
-                token["user_id"],
-            ),
-        )
-        row = cursor.fetchone()
-        conn.commit()
-        source_id = row["source_id"] if row else None
+    # ここから先が失敗すると、保存済みのファイルだけが残って誰からも参照されなくなる。
+    # DBに行が無いので画面にも出ず、削除する手段も無い。
+    # 例外はそのまま外へ投げつつ、保存した実体だけを消してから通す
+    try:
+        with closing(get_connection()) as conn:
+            # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
+            cursor = conn.execute(
+                """
+                INSERT INTO sources
+                    (file_name, file_type, file_path, scope,
+                     owner_user_id, uploaded_at, uploaded_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING source_id
+                """,
+                (
+                    # file_name … 画面に表示する「元のファイル名」。
+                    #              表示専用で、パスの組み立てには使わない
+                    # file_path … 読み出しに使うキー。上で生成した安全な名前だけから作られている
+                    # 「見せる名前」と「保存先の名前」を分けることでパストラバーサルを断つ
+                    file.filename,
+                    file_type,
+                    file_path,
+                    scope,
+                    owner_user_id,
+                    uploaded_at,
+                    token["user_id"],
+                ),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            source_id = row["source_id"] if row else None
 
-    # INSERT が成功していれば RETURNING は必ず1行返す。
-    # None なら採番できていない＝本来ありえない状態なので、ここで止める
-    if source_id is None:
-        raise RuntimeError(
-            f"sources への INSERT で source_id が採番されませんでした file_name={file.filename}"
+        # INSERT が成功していれば RETURNING は必ず1行返す。
+        # None なら採番できていない＝本来ありえない状態なので、ここで止める
+        if source_id is None:
+            raise RuntimeError(
+                f"sources への INSERT で source_id が採番されませんでした file_name={file.filename}"
+            )
+    except Exception:
+        logger.exception(
+            "ソースのDB登録に失敗しました。保存済みファイルを削除します file_name=%s",
+            _sanitize_for_log(file.filename),
         )
+        await _cleanup_orphan_file(file_path)
+        raise
 
     # 本文を取り出してベクトル化し、Qdrantに保存する（ここまで成功して初めて「登録完了」）
     try:
