@@ -9,8 +9,13 @@
     社員マスタ（滅多に変わらない）はCSVのまま読み取り専用にしておき、
     ログインのたびに変わる値だけをこのテーブルに分けて持つ。
 
-DB操作の流儀は既存コード（chat_history.py 等）に合わせている:
-    get_connection() で接続 → execute（%sプレースホルダ）→ commit → close
+DB操作の流儀:
+    with closing(get_connection()) as conn: で接続 → execute（%sプレースホルダ）→ commit
+    （commit は with ブロックの内側で行い、close は with を抜けるときに任せる）
+
+    closing を使う理由:
+        execute の途中で例外が出ても、with を抜けるときに必ず接続が閉じられるため。
+        Cloud SQL は同時接続数に上限があり、閉じ忘れが溜まると新規接続が拒否される。
 
 日時の形式:
     chat_sessions.started_at / sources.uploaded_at と同じく、
@@ -19,6 +24,7 @@ DB操作の流儀は既存コード（chat_history.py 等）に合わせてい�
     変換して表示するため、オフセット（+00:00）を必ず含める必要がある。
 """
 
+from contextlib import closing
 from datetime import datetime, timezone
 
 from app.database import get_connection
@@ -53,17 +59,16 @@ def record_login(user_id: str) -> str:
     # 記録時刻を文字列で用意（DBのカラムはTEXT型なのでISO形式の文字列で持つ）
     last_login_at = datetime.now(timezone.utc).isoformat()
 
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO user_logins (user_id, last_login_at)
-        VALUES (%s, %s)
-        ON CONFLICT (user_id) DO UPDATE SET last_login_at = excluded.last_login_at
-        """,
-        (user_id, last_login_at),
-    )
-    conn.commit()
-    conn.close()
+    with closing(get_connection()) as conn:
+        conn.execute(
+            """
+            INSERT INTO user_logins (user_id, last_login_at)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET last_login_at = excluded.last_login_at
+            """,
+            (user_id, last_login_at),
+        )
+        conn.commit()
 
     return last_login_at
 
@@ -82,12 +87,11 @@ def get_last_login_at(user_id: str) -> str | None:
         None のときに画面へ何を出すかは呼び出し元の責任
         （現状は空文字を返し、画面側が「未記録」と表示する）。
     """
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT last_login_at FROM user_logins WHERE user_id = %s",
-        (user_id,),
-    ).fetchone()
-    conn.close()
+    with closing(get_connection()) as conn:
+        row = conn.execute(
+            "SELECT last_login_at FROM user_logins WHERE user_id = %s",
+            (user_id,),
+        ).fetchone()
 
     # 一度もログインしていない社員は行そのものが無い
     if row is None:
