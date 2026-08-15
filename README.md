@@ -30,7 +30,7 @@ gcloud auth application-default login  # GCPの認証情報を用意する
 brew install cloud-sql-proxy           # Cloud SQL への接続に使う
 ```
 
-機密情報（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY`）は `scripts/dev.py` が Google Secret Manager から取得して環境変数に入れるため、`.env` に手で書く必要はありません。詳細は `docs/secrets.md` を参照。
+機密情報（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` / `DATABASE_URL`）は `scripts/dev.py` が Google Secret Manager から取得して環境変数に入れるため、`.env` に手で書く必要はありません。`DATABASE_URL` だけは Cloud Run 用（Unix ソケット指定）の形式で登録されているため、`scripts/dev.py` が取得後に proxy 経由（`localhost:5432`）で繋がる形へ変換してから設定します。詳細は `docs/secrets.md` を参照。
 
 ## ローカル開発の起動手順
 
@@ -48,18 +48,13 @@ proxy を使う理由は、Cloud SQL がインターネットへ直接ポート�
 
 ### 2. アプリを起動する（ターミナルB）
 
-`DATABASE_URL` を設定してから起動します。この値は `scripts/dev.py` が取得する対象に**入っていない**ため、自分で環境変数に入れる必要があります。
-
 ```bash
-export DATABASE_URL="postgresql://founder:<PASSWORD>@localhost:5432/founder"
 uv run python scripts/dev.py
 ```
 
-`<PASSWORD>` は実際の値に置き換えてください。**パスワードをこのファイルやチャット・Issue・PRに書かないこと。**分からない場合はリポジトリオーナーに確認してください（ユーザー名 `founder` は機密ではないため、そのまま使えます）。
+`DATABASE_URL` を手で設定する必要はありません。`scripts/dev.py` が Secret Manager から取得し、proxy 経由で繋がる形に変換して環境変数に入れます。DBのパスワードを人が目にすることなく開発できます。
 
 http://localhost:8000 にアクセス。
-
-`DATABASE_URL` を設定せずに起動すると、DBを使う画面（チャット・ソース管理など）で `RuntimeError` になります。エラーメッセージに proxy の起動が必要な旨が出ます。
 
 ### 3. テストを実行するとき
 
@@ -75,17 +70,22 @@ gcloud sql databases create founder_test --instance=founder-db --project=noteboo
 gcloud sql databases list --instance=founder-db --project=notebooklm-482403
 ```
 
-2回目以降は、`founder_test` を指して実行するだけです。
+2回目以降は、次のコマンドだけで実行できます。
 
 ```bash
-export DATABASE_URL="postgresql://founder:<PASSWORD>@localhost:5432/founder_test"
-uv run pytest
+uv run python scripts/test.py
 ```
 
-> **注意: 末尾を `founder`（本番用）にしないでください。**
+`scripts/test.py` が接続情報を取得し、接続先を `founder_test` に差し替えてから pytest を起動します。引数はそのまま pytest に渡るため、一部だけ実行することもできます。
+
+```bash
+uv run python scripts/test.py -k dev_script
+```
+
+> **注意: 接続先を `founder`（開発用）にしないでください。**
 > `tests/conftest.py` はテスト1件ごとに `sources` / `chat_sessions` / `chat_messages` / `user_logins` の4テーブルを `TRUNCATE` します。接続先を間違えると、**開発中に入れたデータが消えます。**
 >
-> このため `tests/conftest.py` は、接続先のデータベース名に `test` が含まれない場合、テーブルを空にせずにテストを中断します。取り違えたときは1件も消さずに失敗するので、エラーメッセージに従って `DATABASE_URL` を直してください。
+> `scripts/test.py` は、接続先が `founder_test` であることを確かめてから pytest を起動します。違う場合は pytest を起動せずにエラーで止まるため、開発用DBを指したまま実行されることはありません。`tests/conftest.py` 側でも、接続先のデータベース名に `test` が含まれない場合はテーブルを空にせずに中断します。
 
 CI（GitHub Actions）では `.github/workflows/ci.yml` が PostgreSQL の service コンテナを立て、`DATABASE_URL` を渡しています。proxy は使いません。
 
@@ -103,7 +103,7 @@ GCP の認証情報が無くてもローカル開発を進められるよう、`
 
 GCS を使う場合は、バケットへのアクセス権を持つ認証情報が必要になる。上のセットアップ手順にある `gcloud auth application-default login`（ADC）を済ませてあれば、認証情報の追加設定は不要（`GOOGLE_APPLICATION_CREDENTIALS` は空のままでよい）。
 
-`scripts/dev.py` が環境変数へ入れるのは Secret Manager 管理対象の4つだけで、`GCS_BUCKET_NAME` は含まれない。そのためローカルで `uv run python scripts/dev.py` を使う限り、既定ではバケット名が空＝`uploads/` 保存になる。ローカルから実際に GCS へ保存して確かめたいときだけ、バケット名を環境変数で渡す。
+`scripts/dev.py` が環境変数へ入れるのは Secret Manager 管理対象の5つ（`JWT_SECRET_KEY` / `GEMINI_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` / `DATABASE_URL`）だけで、`GCS_BUCKET_NAME` は含まれない。そのためローカルで `uv run python scripts/dev.py` を使う限り、既定ではバケット名が空＝`uploads/` 保存になる。ローカルから実際に GCS へ保存して確かめたいときだけ、バケット名を環境変数で渡す。
 
 ```bash
 GCS_BUCKET_NAME=<バケット名> uv run python scripts/dev.py
