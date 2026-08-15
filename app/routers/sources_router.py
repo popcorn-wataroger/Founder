@@ -1,6 +1,5 @@
 import logging
 import re
-import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +14,7 @@ from pydantic import BaseModel
 from app import storage
 from app.database import get_connection
 from app.routers.auth_router import require_admin
-from app.upload_paths import sanitize_upload_name
+from app.upload_paths import build_save_name, sanitize_upload_name
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
 from app.vectorizer import embed_text, extract_text, split_into_chunks
 
@@ -28,17 +27,10 @@ admin_router = APIRouter(prefix="/api/admin", tags=["sources"])
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
 
-# ソース種別 → 保存に使う拡張子の対応表。
-# なぜ辞書で持つか（パストラバーサル対策）:
-#     保存パスに載せる拡張子は、ユーザーのファイル名から切り出した文字列ではなく
-#     「コード側が持つ定数」から引く。こうすると保存パスを構成する文字列に
-#     ユーザー入力が1文字も混ざらない。
-#     入口の ALLOWED_EXTENSIONS チェック（値を変えない検査）だけでは、
-#     静的解析から見て「ユーザー入力がパスまで届いている」状態が続いてしまうため、
-#     値そのものを定数に置き換えて汚染を断ち切る。
-EXTENSION_BY_TYPE = {"pdf": ".pdf", "docx": ".docx", "pptx": ".pptx", "txt": ".txt"}
+# アップロードの入口で受け付ける拡張子。ユーザーが送ってきたファイル名を
+# ここで弾くための検査用なので、保存名の組み立て（app/upload_paths.py）とは役割が別
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
 
 # ダウンロード時に返す Content-Type。表示名（file_name）からの推測ではなく
 # ソース種別の定数表から引く。表示名に拡張子が無くても正しい種別で返せる
@@ -291,24 +283,14 @@ async def upload_source(
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="ファイルサイズが50MBを超えています")
 
-    # ソース種別（pdf / docx / pptx / txt）。上のチェックを通っているので必ず辞書に存在する
+    # ソース種別（pdf / docx / pptx / txt）。上のチェックを通っているので必ず対応表に存在する
     file_type = suffix.lstrip(".")
 
-    # 保存名は、ユーザーのファイル名を一切使わずサーバー側で組み立てる
-    # なぜ必要か（パストラバーサル対策）:
-    #     file.filename はクライアントが自由に決められる文字列で、
-    #     '../../app/main.py' や '/etc/cron.d/evil' のような値も送りつけられる。
-    #     これをそのまま連結すると uploads/ の外へ書き込めてしまう
-    #     （Path の / は「安全な結合」ではなく単なる連結で、右が絶対パスなら左を捨てる）。
-    #     GCSでも同じで、'../' を含む名前は意図しない場所を指しうる。
-    # timestamp   … 人が見て「いつの投入か」を追えるように
-    # uuid4       … 同時アップロードでも名前が衝突しないように
-    # safe_suffix … ユーザーのファイル名から切り出した文字列ではなく、
-    #               EXTENSION_BY_TYPE が持つ定数を使う。これで保存名を組み立てる
-    #               材料が全てコード側の値になり、ユーザー入力が1文字も混ざらない
-    safe_suffix = EXTENSION_BY_TYPE[file_type]
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    save_name = f"{timestamp}_{uuid.uuid4()}{safe_suffix}"
+    # 保存名は、ユーザーのファイル名を一切使わずサーバー側で組み立てる（パストラバーサル対策）。
+    # 組み立ての中身と、その理由は app/upload_paths.py の build_save_name にまとめている。
+    # 保存名を検証する側（sanitize_upload_name）と同じファイルに置くことで、
+    # 片方だけ形式が変わってダウンロードが404になる、というズレを防いでいる
+    save_name = build_save_name(file_type)
 
     # 保存する。保存先がGCSかローカルかは storage が判断するので、ここでは意識しない。
     # 戻り値の file_path は、後で読み出すときに storage へ渡すキー（DBにも記録する）
