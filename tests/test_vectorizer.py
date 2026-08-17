@@ -1,4 +1,8 @@
-"""_extract_url / _resolved_ips_are_public（SSRF対策の関門）のテスト。
+"""vectorizer._extract_url / safe_urls._resolved_ips_are_public（SSRF対策の関門）のテスト。
+
+URLの安全性検証は app/safe_urls.py に集約している。
+このテストが safe_urls の関数と vectorizer の関数の両方を見ているのは、
+「検証そのもの」と「検証を通した結果で通信する側」が別のファイルに分かれているため。
 
 なぜモックするか:
     ホスト名の検査は socket.getaddrinfo で「ホスト名 → IPアドレス」を解決する。
@@ -16,7 +20,7 @@ import socket
 
 import pytest
 
-from app import vectorizer
+from app import safe_urls, vectorizer
 
 
 def _fake_addr_infos(*ips: str) -> list[tuple]:
@@ -39,7 +43,7 @@ def _patch_getaddrinfo(monkeypatch: pytest.MonkeyPatch, *ips: str) -> None:
     def fake_getaddrinfo(*args: object, **kwargs: object) -> list[tuple]:
         return _fake_addr_infos(*ips)
 
-    monkeypatch.setattr(vectorizer.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(safe_urls.socket, "getaddrinfo", fake_getaddrinfo)
 
 
 # --- スキームの検査（名前解決までいかずに弾かれる） ---
@@ -104,7 +108,7 @@ def test_名前解決に失敗したURLは拒否される(monkeypatch: pytest.Mo
     def raise_gaierror(*args: object, **kwargs: object) -> list[tuple]:
         raise socket.gaierror("名前解決に失敗しました")
 
-    monkeypatch.setattr(vectorizer.socket, "getaddrinfo", raise_gaierror)
+    monkeypatch.setattr(safe_urls.socket, "getaddrinfo", raise_gaierror)
     with pytest.raises(ValueError):
         vectorizer._extract_url("http://not-exist.example/")
 
@@ -114,7 +118,7 @@ def test_名前解決に失敗したURLは拒否される(monkeypatch: pytest.Mo
 
 def test_公開IPに解決されるホスト名は公開と判定される(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_getaddrinfo(monkeypatch, "93.184.216.34")
-    assert vectorizer._resolved_ips_are_public("example.com") is True
+    assert safe_urls._resolved_ips_are_public("example.com") is True
 
 
 @pytest.mark.parametrize(
@@ -129,4 +133,4 @@ def test_内部IPに解決されるホスト名は非公開と判定される(
     monkeypatch: pytest.MonkeyPatch, ip: str
 ) -> None:
     _patch_getaddrinfo(monkeypatch, ip)
-    assert vectorizer._resolved_ips_are_public("evil.example") is False
+    assert safe_urls._resolved_ips_are_public("evil.example") is False
