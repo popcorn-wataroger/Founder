@@ -173,6 +173,15 @@ async function registerCommonUrl() {
   }
 }
 
+// 一覧取得リクエストの通し番号。最新のリクエストだけがDOMを更新するために使う
+//
+// なぜ必要か:
+//     loadCommonSources() は画面初期化時と登録成功後の2箇所から呼ばれ、
+//     これらは並行して走りうる。先に投げた古いリクエストが後から完了すると、
+//     登録直後の一覧を古い結果で上書きし、登録したはずのソースが
+//     一覧から一時的に消える。番号が最新でなければ描画しないことで防ぐ。
+let commonSourceListRequestId = 0;
+
 // 登録済みの共通ソースを取得して一覧に描画する
 //
 // 入力: なし
@@ -188,6 +197,8 @@ async function registerCommonUrl() {
 // このAPIが返すのは scope='common' のものだけ。
 // 個別ソース（他人の評価・給与など）はファイル名も含めて1件も返らない。
 async function loadCommonSources() {
+  // このリクエストの番号を採番する。以降、最新かどうかをこの番号で判定する
+  const requestId = ++commonSourceListRequestId;
   const container = document.getElementById("sm-source-list");
   setCommonSourceListMessage("読み込み中...");
 
@@ -195,6 +206,9 @@ async function loadCommonSources() {
     const res = await fetch("/api/sources/common", { headers: smAuthHeaders() });
     if (!res.ok) throw new Error("取得失敗");
     const sources = await res.json();
+
+    // 待っている間に新しいリクエストが始まっていたら、この結果は捨てる
+    if (requestId !== commonSourceListRequestId) return;
 
     if (sources.length === 0) {
       setCommonSourceListMessage("登録された共通ソースはありません。");
@@ -206,6 +220,8 @@ async function loadCommonSources() {
       container.appendChild(buildCommonSourceItem(source));
     });
   } catch (e) {
+    // 失敗の表示も同じ理由で、最新のリクエストのときだけ出す
+    if (requestId !== commonSourceListRequestId) return;
     setCommonSourceListMessage("一覧の取得に失敗しました。");
   }
 }
