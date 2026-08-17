@@ -500,14 +500,43 @@ function renderStaffRole(role) {
   setStaffRoleStatus("", null);
 }
 
-// 権限変更の状況を表示する（ソース管理画面と同じ source-status を流用）
+/**
+ * 権限変更の状況を表示する。
+ *
+ * 入力:
+ *   message … 表示する文字列（空や null なら表示を消す）
+ *   type    … "success" | "error" | "loading" | null（色分けに使うCSSクラス）
+ * 出力: なし（detail-role-status の class と textContent を書き換える）
+ *
+ * 処理:
+ *   source-status に type のクラスを足した class を組み立てて入れ替え、
+ *   本文を textContent で入れる。
+ *
+ * ソース管理画面の setSourceStatus と同じ形にしている理由:
+ *   出し先の要素が違うだけで、やることは同じ。
+ *   色分けのCSS（.source-status.error など）もそのまま流用できるので、
+ *   画面ごとにメッセージの見え方がばらつかない。
+ */
 function setStaffRoleStatus(message, type) {
   const el = document.getElementById("detail-role-status");
   el.className = "source-status" + (type ? " " + type : "");
   el.textContent = message || "";
 }
 
-// 選択が現在のロールから変わったときだけ保存ボタンを有効にする
+/**
+ * 権限のプルダウンを操作したときに、保存ボタンの有効・無効を切り替える。
+ *
+ * 入力: なし（select の現在の選択値と、保持している currentStaffRole を見る）
+ * 出力: なし（保存ボタンの disabled を書き換える）
+ *
+ * 処理:
+ *   選択が currentStaffRole と違えば保存ボタンを有効にし、同じなら無効にする。
+ *
+ * なぜ同じ値のときは押せなくするか:
+ *   変わっていないのに保存できると、押した側は何が起きたのか分からない。
+ *   「変更してから保存する」という順番を、押せる・押せないで示しておく。
+ *   サーバーへ意味のないリクエストを送らずに済む、という副次的な利点もある。
+ */
 function onRoleSelectChange() {
   const select = document.getElementById("detail-role-select");
   document.getElementById("detail-role-save").disabled = select.value === currentStaffRole;
