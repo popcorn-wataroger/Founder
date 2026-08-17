@@ -13,7 +13,12 @@ from pydantic import BaseModel
 
 from app import storage
 from app.database import get_connection
-from app.routers.auth_router import ROLE_ADMIN, require_admin, require_source_uploader
+from app.routers.auth_router import (
+    ROLE_ADMIN,
+    require_admin,
+    require_source_uploader,
+    verify_token,
+)
 from app.safe_urls import build_safe_public_url
 from app.upload_paths import build_save_name, sanitize_upload_name
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
@@ -407,6 +412,157 @@ async def upload_source(
                     # file_name … 画面に表示する「元のファイル名」。
                     #              表示専用で、パスの組み立てには使わない
                     # file_path … 読み出しに使うキー。上で生成した安全な名前だけから作られている
+                    # 「見せる名前」と「保存先の名前」を分けることでパストラバーサルを断つ
+                    file.filename,
+                    file_type,
+                    file_path,
+                    scope,
+                    owner_user_id,
+                    uploaded_at,
+                    token["user_id"],
+                ),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            source_id = row["source_id"] if row else None
+
+        # INSERT が成功していれば RETURNING は必ず1行返す。
+        # None なら採番できていない＝本来ありえない状態なので、ここで止める
+        if source_id is None:
+            raise RuntimeError(
+                f"sources への INSERT で source_id が採番されませんでした file_name={file.filename}"
+            )
+    except Exception:
+        logger.exception(
+            "ソースのDB登録に失敗しました。保存済みファイルを削除します file_name=%s",
+            _sanitize_for_log(file.filename),
+        )
+        await _cleanup_orphan_file(file_path)
+        raise
+
+    # 本文を取り出してベクトル化し、Qdrantに保存する（ここまで成功して初めて「登録完了」）
+    try:
+        chunk_count = _vectorize_and_save(
+            source_id=source_id,
+            path=file_path,
+            file_type=file_type,
+            scope=scope,
+            owner_user_id=owner_user_id,
+        )
+    except Exception:
+        # 失敗したら、直前のDB登録とファイル保存を取り消して登録前の状態に戻す
+        logger.exception(
+            "ベクトル化に失敗しました。ソース登録を取り消します source_id=%s", source_id
+        )
+        await _rollback_source(source_id, file_path)
+        raise HTTPException(
+            status_code=500,
+            detail="ファイルの読み取りまたはベクトル化に失敗しました。ソースは登録されていません",
+        )
+
+    return {
+        "success": True,
+        "source_id": source_id,
+        "file_name": file.filename,
+        "chunk_count": chunk_count,
+    }
+
+
+@router.post("/my-upload")
+async def upload_my_source(
+    file: UploadFile,
+    token: dict = Depends(verify_token),
+) -> dict[str, Any]:
+    """自分の個別ソースとしてファイルを登録し、AIが検索できるようベクトル化する。
+
+    誰が使えるか（権限ルール）:
+        ログイン中の社員本人。登録できるのは「自分の個別ソース」だけで、
+        他人の資料としては登録できない。
+        入口の依存は verify_token だけなので、ログインしていれば誰でも使える
+        （社員・source_manager・社長のいずれも、自分の資料を上げられる）。
+
+    処理:
+        1. 入力チェック（ファイル名、拡張子、サイズ）
+        2. ストレージにファイルを保存する（保存先がGCSかローカルかは storage が決める）
+        3. sources テーブルに登録し、source_id を採番する
+        4. 本文を取り出してベクトル化し、Qdrantに保存する
+        5. 4が失敗したら、3のDB登録と2のファイル保存を取り消して（ロールバック）エラーを返す
+
+    なぜ scope と owner_user_id を引数で受け取らないか（重要）:
+        受け取ると、他人の user_id を送るだけで他人の資料として登録できてしまう。
+        引数に無ければ、そもそも他人を指す値が入り込む経路が存在しない。
+        「送られてきた値を検証で弾く」のではなく、「値を送れる経路そのものを作らない」。
+        scope は 'individual' 固定、owner_user_id は token（JWT）の user_id 固定で、
+        どちらもリクエストからは決められない。
+
+    なぜ既存の upload_source() に分岐を足さないのか（重要）:
+        あちらは require_source_uploader で守られた共通ソース用の入口。
+        同じ関数に「社員なら owner_user_id を強制上書きする」という分岐を足すと、
+        条件が増えるほど権限の穴を見落としやすくなる。
+        入口を分けて、それぞれが1つのことだけをする形にしておけば、
+        「この入口では他人の資料に触れない」を関数ごとに読み切れる。
+
+    なぜ順番が「DB登録 → ベクトル化」なのか:
+        Qdrantに保存するとき、どのソース由来かを示す source_id が必要になる。
+        source_id はDBに登録して初めて採番される
+        （GENERATED ALWAYS AS IDENTITY）ため、先にDB登録する。
+
+    validate_scope / check_scope_permission を呼ばない理由:
+        どちらもリクエストで指定された scope と owner_user_id を検査する関数。
+        この入口ではその2つがリクエストから来ないため、検証する対象がない。
+    """
+    # scope と owner_user_id はサーバー側で固定する（リクエストからは決められない）
+    scope = "individual"
+    owner_user_id = token["user_id"]
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="ファイル名が取得できません")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"対応していないファイル形式です。対応形式: {', '.join(ALLOWED_EXTENSIONS)}",
+        )
+
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="ファイルサイズが50MBを超えています")
+
+    # ソース種別（pdf / docx / pptx / txt）。上のチェックを通っているので必ず対応表に存在する
+    file_type = suffix.lstrip(".")
+
+    # 保存名は、ユーザーのファイル名を一切使わずサーバー側で組み立てる（パストラバーサル対策）。
+    # 組み立ての中身と、その理由は app/upload_paths.py の build_save_name にまとめている
+    save_name = build_save_name(file_type)
+
+    # 保存する。保存先がGCSかローカルかは storage が判断するので、ここでは意識しない。
+    # storage.save は同期関数で、GCS が保存先のときは中で通信する。
+    # async のルーターから直接呼ぶと通信待ちの間イベントループが止まるため、別スレッドへ逃がす
+    try:
+        file_path = await run_in_threadpool(storage.save, save_name, contents)
+    except Exception:
+        # ファイル名はユーザー入力なので、改行を落としてからログに渡す
+        logger.exception(
+            "ファイルの保存に失敗しました file_name=%s", _sanitize_for_log(file.filename)
+        )
+        raise HTTPException(status_code=500, detail="ファイルの保存に失敗しました")
+
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+
+    # ここから先が失敗すると、保存済みのファイルだけが残って誰からも参照されなくなる。
+    # 例外はそのまま外へ投げつつ、保存した実体だけを消してから通す
+    try:
+        with closing(get_connection()) as conn:
+            # RETURNING で採番された source_id を受け取る。値は commit の前に fetchone() で取り出す
+            cursor = conn.execute(
+                """
+                INSERT INTO sources
+                    (file_name, file_type, file_path, scope,
+                     owner_user_id, uploaded_at, uploaded_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING source_id
+                """,
+                (
                     # 「見せる名前」と「保存先の名前」を分けることでパストラバーサルを断つ
                     file.filename,
                     file_type,

@@ -205,6 +205,7 @@ def search(
     role: str,
     top_k: int = 3,
     target_user_id: str | None = None,
+    self_user_id: str | None = None,
 ) -> list[dict]:
     """質問に意味が近いチャンクを、権限に応じた範囲から上位順に返す。
 
@@ -214,6 +215,8 @@ def search(
         top_k          … 上位何件を返すか（既定は3件）
         target_user_id … 社員データ画面から「この社員について」質問する場合の対象社員の user_id。
                          省略時（None）は従来どおりの挙動になる
+        self_user_id   … 質問した本人の user_id。指定すると、社員の検索範囲に
+                         「自分の個別ソース」が加わる。省略時（None）は共通ソースのみ
 
     出力:
         質問に近い順に並んだ辞書のリスト（最大 top_k 件）
@@ -227,18 +230,37 @@ def search(
         4. 各ヒットの payload から text と source_id を取り出して返す
 
     権限について（重要）:
-        社員(admin以外)の検索では scope=='common' のチャンクだけを対象にする。
+        社員(admin以外)の検索では、既定で scope=='common' のチャンクだけを対象にする。
         こうしないと、他人の人事評価や給与などの個別ソース(scope='individual')が
         検索でヒットし、AIの回答に混ざってしまう。ここが情報漏洩を防ぐ最後の砦になる。
+        self_user_id を渡した場合だけ、そこに「自分の個別ソース」が加わる。
         社長(admin)はフィルタを掛けず、共通・個別すべてのソースを検索できる。
 
+    self_user_id に何を渡してよいか（重要）:
+        リクエスト由来の値を渡してはならない。必ず JWT の user_id を渡すこと。
+        リクエストボディやクエリの値をそのまま渡すと、社員が他人の user_id を
+        送るだけで、その人の個別ソース（評価・給与）を読めてしまう。
+        JWTは署名付きで書き換えられないので、そこから取り出した値だけが信用できる。
+
+    なぜ target_user_id と self_user_id を分けているか（重要）:
+        社員の経路に「リクエスト由来の値」がフィルタまで到達する道を、
+        引数の段階で構造的に断つため。
+        target_user_id は社長が画面で選んだ相手を指す引数で、社員の経路では
+        一切参照しない。self_user_id は本人自身を指す引数で、JWT からしか来ない。
+        1つの引数を両方の意味で使い回すと、呼び出し側のたった1箇所の取り違えで
+        他人の個別ソースが開いてしまう。引数を分けておけば、
+        「社員の経路で target_user_id を見ない」という規則をこの関数の中だけで守れる。
+
     判定の順番（この順である理由）:
-        1. 社員(admin以外)          → 共通のみ。target_user_id が渡ってきても無視する
-        2. 社長 かつ target_user_id → 共通 ＋ その社員の個別のみ
-        3. 社長 かつ 指定なし        → 絞り込みなし（従来どおり）
+        1. 社員(admin以外) かつ self_user_id あり → 共通 ＋ 自分の個別のみ
+        2. 社員(admin以外) かつ 指定なし          → 共通のみ（従来どおり）
+        3. 社長 かつ target_user_id               → 共通 ＋ その社員の個別のみ
+        4. 社長 かつ 指定なし                     → 絞り込みなし（従来どおり）
 
         社員の判定を先に置くことで、万一 target_user_id が社員の経路から
-        渡ってきても、社員が個別ソースに届くことはない。
+        渡ってきても、社員が他人の個別ソースに届くことはない
+        （社員の経路では target_user_id を一切見ない、という既存の安全設計は
+        self_user_id を足したあとも変えていない）。
         呼び出し元（/api/chat/staff-inquiry）も require_admin で守っているので、
         入口と検索の二段構えになる。
 
@@ -252,10 +274,18 @@ def search(
     # 2. 権限に応じた検索範囲の絞り込み条件を作る
     query_filter: Filter | None
     if role != "admin":
-        # 社員は共通ソースのみ。payload の scope が "common" のものだけを検索対象にする
-        # （must = すべての条件を満たすもの、の意味）
-        # target_user_id が渡ってきても、ここでは一切見ない（社員に個別ソースは開かない）
-        query_filter = Filter(must=[FieldCondition(key="scope", match=MatchValue(value="common"))])
+        # 社員の経路。target_user_id はここでは一切見ない
+        # （見てしまうと、他人を指す値が渡ったときに個別ソースが開いてしまう）
+        if self_user_id is not None:
+            # 本人が指定されている場合だけ、共通ソースに「自分の個別ソース」を足す。
+            # self_user_id は JWT 由来の値であることが呼び出し側の責任
+            query_filter = _build_staff_filter(self_user_id)
+        else:
+            # 共通ソースのみ。payload の scope が "common" のものだけを検索対象にする
+            # （must = すべての条件を満たすもの、の意味）
+            query_filter = Filter(
+                must=[FieldCondition(key="scope", match=MatchValue(value="common"))]
+            )
     elif target_user_id is not None:
         # 社長が「特定の社員について」質問した場合。
         # 共通ソースと、その社員の個別ソースだけに絞る（他の社員の個別ソースは対象外）

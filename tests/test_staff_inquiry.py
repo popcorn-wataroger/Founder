@@ -46,6 +46,7 @@ class RecordedCall:
         self.role: str | None = None
         self.target_user_id: str | None = None
         self.profile: str | None = None
+        self.self_user_id: str | None = None
 
 
 @pytest.fixture
@@ -58,11 +59,13 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> RecordedCall:
         role: str,
         target_user_id: str | None = None,
         profile: str | None = None,
+        self_user_id: str | None = None,
     ) -> tuple[list[str], Iterator[str]]:
         call.question = question
         call.role = role
         call.target_user_id = target_user_id
         call.profile = profile
+        call.self_user_id = self_user_id
         return ["10", "20"], iter(["こんにちは", "、奥村さんの評価です。"])
 
     monkeypatch.setattr(chat_router, "answer_question_stream", fake_answer_question_stream)
@@ -72,6 +75,12 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> RecordedCall:
 def _admin_headers() -> dict[str, str]:
     """社長としてログイン済みの状態を表す認証ヘッダを作る。"""
     token = create_access_token(user_id=ADMIN_USER_ID, role="admin")
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _employee_headers() -> dict[str, str]:
+    """社員としてログイン済みの状態を表す認証ヘッダを作る。"""
+    token = create_access_token(user_id=STAFF_USER_ID, role="employee")
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -344,3 +353,47 @@ def test_社員別チャットのセッションを通常チャットに指定�
 
     assert response.status_code == 400
     assert recorded.question is None
+
+
+def test_社員チャットではJWTのuser_idがself_user_idに渡る(
+    temp_db: None, recorded: RecordedCall
+) -> None:
+    """/api/chat/stream に、トークンの user_id が self_user_id として渡ることを固定する。
+
+    なぜこのテストが必要か（重要）:
+        self_user_id は「この人の個別ソースを検索してよい」という指定そのもの。
+        ここにリクエスト由来の値（ボディやクエリの user_id）が渡る作りにすると、
+        社員が他人の user_id を送るだけで、その人の個別ソース
+        （評価・給与）を読めてしまう。
+        JWTは署名付きで改ざんできないので、そこから取り出した値だけが信用できる。
+        「JWT由来の値が渡っている」ことを、APIを通した状態で固定しておく。
+    """
+    response = TestClient(app).post(
+        "/api/chat/stream",
+        json={"question": "私の資格は？"},
+        headers=_employee_headers(),
+    )
+
+    assert response.status_code == 200
+    assert recorded.self_user_id == STAFF_USER_ID
+    assert recorded.role == "employee"
+
+
+def test_社員別チャットではself_user_idを渡さない(temp_db: None, recorded: RecordedCall) -> None:
+    """/api/chat/staff-inquiry では self_user_id を渡さないことを固定する。
+
+    なぜこのテストが必要か:
+        この経路は require_admin で守られており role='admin' になる。
+        search() の社員向けの分岐に入らないので、self_user_id を渡す意味がない。
+        意味の無い値を渡さないでおけば、「誰の資料を見てよいか」を決める材料が
+        target_user_id ひとつに保たれ、後から読んだときに経路を追いやすい。
+    """
+    response = TestClient(app).post(
+        "/api/chat/staff-inquiry",
+        json={"question": "評価は？", "target_user_id": STAFF_USER_ID},
+        headers=_admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert recorded.self_user_id is None
+    assert recorded.target_user_id == STAFF_USER_ID
