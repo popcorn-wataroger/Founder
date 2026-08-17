@@ -116,13 +116,13 @@ IMPORTANT: static/index.html に全画面のUIプロトタイプあり。デザ�
 ## 認証（MVP）
 
 - CSVファイルで社員マスタ管理（ダミーデータ）
-- ログインで社員コード＋パスワード → ロール判定（employee / admin）
-- ADMIN=管理者、EMP001〜EMP006=社員
+- ログインで社員コード＋パスワード → ロール判定（employee / source_manager / admin）
+- ADMIN=管理者、EMP001〜EMP006=社員、EMP007=共通ソース管理者
 
 ## データモデル
 
 ### users（社員マスタ）
-user_id(PK), employee_code, name, department, gender, birth_date, family, hire_date, employment_type, role(employee/admin), password_hash, last_login_at
+user_id(PK), employee_code, name, department, gender, birth_date, family, hire_date, employment_type, role(employee/source_manager/admin), password_hash, last_login_at
 
 ### sources（ソース）
 source_id(PK), file_name, file_type(pdf/docx/pptx/txt/url), file_path, scope(common/individual), owner_user_id(FK→users, NULLなら共通), uploaded_at, uploaded_by(FK→users)
@@ -137,17 +137,20 @@ message_id(PK), session_id(FK→chat_sessions), role(user/assistant), content, c
 
 IMPORTANT: これらの権限ルールは絶対に守ること。
 
-| 操作 | 社員 | 社長 |
-|------|------|------|
-| 共通ソースでAIに質問 | ○ | ○ |
-| 自分の個別ソースでAIに質問 | △（将来） | ○ |
-| 他人の個別ソースでAIに質問 | ✕ 絶対不可 | ○ |
-| ソースのアップロード・削除 | ✕ | ○ |
-| チャットログ閲覧 | 自分のみ | 全員分 |
-| 社員データ閲覧 | ✕ | ○ |
+| 操作 | 社員 | 共通ソース管理者 | 社長 |
+|------|------|------|------|
+| 共通ソースでAIに質問 | ○ | ○ | ○ |
+| 自分の個別ソースでAIに質問 | △（将来） | △（将来） | ○ |
+| 他人の個別ソースでAIに質問 | ✕ 絶対不可 | ✕ 絶対不可 | ○ |
+| 全社共通ソースのアップロード | ✕ | ○ | ○ |
+| 個別ソースのアップロード | ✕ | ✕ | ○ |
+| ソースの削除・ダウンロード | ✕ | ✕ | ○ |
+| チャットログ閲覧 | 自分のみ | 自分のみ | 全員分 |
+| 社員データ閲覧 | ✕ | ✕ | ○ |
 
 - DBにはソースの owner_user_id フィールドを必ず持たせる（将来の本人閲覧対応のため）
 - 社員がAIに質問した場合、個別ソース（他人の評価・給与情報）は絶対に回答に含めない
+- role は employee / source_manager / admin の3値。判定は app/routers/auth_router.py の can_upload_common_source() に集約している
 
 ## ソース管理
 
