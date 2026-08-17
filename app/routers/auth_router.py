@@ -14,6 +14,13 @@ router = APIRouter(prefix="/api", tags=["auth"])
 # Bearerトークンを取り出す仕組み（auto_error=Falseで401を自分でコントロール）
 security = HTTPBearer(auto_error=False)
 
+# ロールを表す定数。
+# 文字列を直接書くとタイプミスに気づけない（"admin" と "Admin" の違いなど）ため、
+# ロール名はここに集約して、判定側はこの定数を参照する。
+ROLE_ADMIN = "admin"
+ROLE_SOURCE_MANAGER = "source_manager"
+ROLE_EMPLOYEE = "employee"
+
 
 def create_access_token(user_id: str, role: str) -> str:
     """JWTアクセストークンを生成する"""
@@ -58,8 +65,52 @@ def require_admin(token: dict = Depends(verify_token)) -> dict:
         認証（verify_token）と権限（require_admin）をこのファイルにまとめておくことで、
         どのルーターからも同じ判定を使い回せる。
     """
-    if token.get("role") != "admin":
+    if token.get("role") != ROLE_ADMIN:
         raise HTTPException(status_code=403, detail="管理者のみ操作できます")
+    return token
+
+
+def can_upload_common_source(role: str) -> bool:
+    """全社共通ソースをアップロードできる役割かどうかを判定する。
+
+    入力:
+        role … ロール名の文字列（例: "admin" / "source_manager" / "employee"）。
+                JWTの role や users.csv の role をそのまま渡す想定。
+
+    処理:
+        role が ROLE_ADMIN か ROLE_SOURCE_MANAGER のいずれかに一致するかを調べる。
+        一致しないもの（未知のロール名や空文字を含む）はすべて許可しない側に倒す。
+
+    出力:
+        アップロードを許可してよいなら True、それ以外は False。
+    """
+    return role in (ROLE_ADMIN, ROLE_SOURCE_MANAGER)
+
+
+def require_source_uploader(token: dict = Depends(verify_token)) -> dict:
+    """全社共通ソースをアップロードできる権限がなければ403を返す。
+
+    入力:
+        token … verify_token が検証したJWTの中身（user_id / role を含む）
+
+    処理:
+        token から role を取り出し、can_upload_common_source() で可否を判定する。
+
+    出力:
+        権限があれば token をそのまま返す。なければ 403 を投げる。
+
+    判定を can_upload_common_source() に分けている理由:
+        「誰がその権限を持つか（役割の持ち方）」と
+        「どこでその権限を要求するか（FastAPIの依存関係としての使い方）」を
+        分離しておくため。
+        いまは role という1つの文字列で役割を表しているが、将来これを
+        権限フラグ（can_upload_source のような列）に変えることになっても、
+        差し替えるのは can_upload_common_source() の中身だけで済み、
+        この関数やエンドポイント側は触らずに済む。
+        vector_store.search() が検索範囲の権限判定を一点に集約しているのと同じ考え方。
+    """
+    if not can_upload_common_source(token.get("role", "")):
+        raise HTTPException(status_code=403, detail="共通ソースをアップロードする権限がありません")
     return token
 
 
