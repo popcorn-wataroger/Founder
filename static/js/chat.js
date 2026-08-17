@@ -11,6 +11,9 @@
 // 吹き出しが混ざるのを防ぐためのフラグ
 let isSending = false;
 
+// 資料をアップロード中かどうか。同じファイルを二重に登録しないためのフラグ
+let isUploadingMySource = false;
+
 // 今つないでいる会話（セッション）のID。まだ会話が始まっていなければ null。
 //
 // ブラウザ（localStorage）には保存しない。保存すると
@@ -259,6 +262,13 @@ async function restoreChatHistory() {
   // currentSessionId も戻さないと、前の人のセッションに書き込もうとして弾かれる
   resetChatMessages(container);
   currentSessionId = null;
+
+  // アップロードの結果表示も消す。
+  // この表示は前のセッションの結果が残ったままになるため、ログアウトして
+  // 別の社員でログインすると、前の人が登録したファイル名が画面に見えてしまう。
+  // 画面は #screen-chat を作り直さず表示を切り替えているだけなので、
+  // 要素は前の状態を保ったまま残る。ログインのたびにここで明示的に消す
+  setMySourceStatus("");
 
   const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
 
@@ -593,5 +603,105 @@ async function sendMessage() {
   } finally {
     // 6. 成功・失敗にかかわらず送信中フラグを戻す（戻さないと二度と送信できなくなる）
     isSending = false;
+  }
+}
+
+// ===== 自分の資料のアップロード =====
+
+/**
+ * 「＋ 資料を追加」ボタン：隠しファイル選択欄を開く。
+ *
+ * 入力: なし
+ * 出力: なし（ファイル選択ダイアログが開く）
+ *
+ * ファイル入力を画面に出さずボタンから発火させるのは、
+ * 既定の見た目のままだとチャット画面のデザインから浮くため。
+ * 管理者画面の openStaffSourcePicker（admin.js）と同じ形にしている。
+ */
+function openMySourcePicker() {
+  document.getElementById("my-source-file-input").click();
+}
+
+/**
+ * アップロードの状況を表示する。
+ *
+ * 入力:
+ *   message … 表示する文字列（空や null なら表示を消す）
+ *   type    … "success" | "error" | "loading" | null（色分けに使うCSSクラス）
+ * 出力: なし（#my-source-status の class と textContent を書き換える）
+ *
+ * ファイル名などをそのまま出すので、必ず textContent で入れる
+ * （innerHTML に入れると、ファイル名に書いたHTMLが解釈されてしまう）。
+ */
+function setMySourceStatus(message, type) {
+  const el = document.getElementById("my-source-status");
+  el.className = "source-status" + (type ? " " + type : "");
+  el.textContent = message || "";
+}
+
+/**
+ * 選んだファイルを「自分の個別ソース」として登録する。
+ *
+ * 入力: file … ファイル選択欄で選ばれたファイル
+ * 出力: なし（結果をメッセージで表示する）
+ *
+ * 処理:
+ *   1. 連打を弾き、処理中フラグを立てる
+ *   2. FormData にファイルだけを入れて POST /api/sources/my-upload に送る
+ *   3. 結果を #my-source-status に表示する
+ *   4. 終了時にファイル入力をリセットする
+ *
+ * なぜ FormData に file しか入れないか（重要）:
+ *   誰の資料として登録するかは、サーバーがトークン（JWT）の user_id から決める。
+ *   このAPIは scope も owner_user_id も受け取らない作りなので、
+ *   送っても無視されるが、送る側も「他人を指す値を作らない」形に揃えておく。
+ *   画面側に他人のIDを組み立てるコードがあると、後から別の用途に流用されたときに
+ *   そこが穴になりうる。
+ *
+ * なぜ最後に input.value = "" するか:
+ *   ファイル入力は「同じファイルを選び直す」と値が変わらないため onchange が発火しない。
+ *   毎回空に戻しておけば、失敗したファイルをもう一度選んでやり直せる。
+ */
+async function uploadMySource(file) {
+  const input = document.getElementById("my-source-file-input");
+  if (!file) return;
+
+  // アップロード中なら何もしない（連打対策。同じ資料が二重に登録されるのを防ぐ）
+  if (isUploadingMySource) return;
+  isUploadingMySource = true;
+
+  // 送るのはファイルだけ。scope や owner_user_id は付けない
+  const formData = new FormData();
+  formData.append("file", file);
+
+  setMySourceStatus(`「${file.name}」をアップロード中...`, "loading");
+
+  try {
+    // 認証はログイン時に localStorage へ保存したトークンを Authorization で送る（他APIと同じ）
+    const res = await fetch("/api/sources/my-upload", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("token")}`,
+      },
+      body: formData,
+    });
+
+    // 未ログイン(401)・対応外の形式(400)・サイズ超過(413)などは、
+    // サーバーの detail をそのまま出す。JSONで返らない場合も extractHttpError が定型文にする
+    if (!res.ok) {
+      setMySourceStatus(await extractHttpError(res), "error");
+      return;
+    }
+
+    const data = await res.json();
+    // 成功時は必ず file_name が返るが、万一欠けていても選んだファイル名で表示する
+    setMySourceStatus(`「${data.file_name || file.name}」を登録しました`, "success");
+  } catch (e) {
+    console.error(e);
+    setMySourceStatus("通信エラーが発生しました。接続を確認してください。", "error");
+  } finally {
+    isUploadingMySource = false;
+    // 同じファイルを続けて選べるようにinputをリセットする
+    input.value = "";
   }
 }

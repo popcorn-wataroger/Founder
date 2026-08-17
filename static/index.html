@@ -772,6 +772,15 @@ body {
       <div class="msg-bubble">こんにちは！社内ナレッジについて何でも聞いてください。マニュアルや規定をもとにお答えします。</div>
     </div>
   </div>
+  <!-- 自分の資料をアップロードする操作エリア。チャット入力欄の直上に置く。
+       見た目を揃えるため、新しいクラスは作らず chat-input-area を流用して余白だけ詰めている -->
+  <div class="chat-input-area" style="padding: 10px 20px; align-items: center;">
+    <!-- 画面には出さず、ボタンからクリックだけをプログラムで発火させる -->
+    <input type="file" id="my-source-file-input" accept=".pdf,.docx,.pptx,.txt" style="display:none" onchange="uploadMySource(this.files[0])">
+    <button class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="openMySourcePicker()">＋ 資料を追加</button>
+    <!-- 処理中・成功・エラーの表示（ソース管理画面と同じ source-status を流用） -->
+    <div id="my-source-status" class="source-status" style="margin:0;"></div>
+  </div>
   <div class="chat-input-area">
     <!-- Enterの判定は chat.js の handleChatInputKeydown が行う（日本語入力の変換確定Enterでは送信しない） -->
     <input type="text" class="chat-input" id="chat-input" placeholder="メッセージを入力..." onkeydown="handleChatInputKeydown(event)">

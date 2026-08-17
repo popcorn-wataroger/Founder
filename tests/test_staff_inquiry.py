@@ -46,6 +46,7 @@ class RecordedCall:
         self.role: str | None = None
         self.target_user_id: str | None = None
         self.profile: str | None = None
+        self.self_user_id: str | None = None
 
 
 @pytest.fixture
@@ -58,11 +59,13 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> RecordedCall:
         role: str,
         target_user_id: str | None = None,
         profile: str | None = None,
+        self_user_id: str | None = None,
     ) -> tuple[list[str], Iterator[str]]:
         call.question = question
         call.role = role
         call.target_user_id = target_user_id
         call.profile = profile
+        call.self_user_id = self_user_id
         return ["10", "20"], iter(["こんにちは", "、奥村さんの評価です。"])
 
     monkeypatch.setattr(chat_router, "answer_question_stream", fake_answer_question_stream)
