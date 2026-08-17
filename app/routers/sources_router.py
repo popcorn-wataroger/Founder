@@ -472,7 +472,7 @@ async def upload_source(
 async def upload_my_source(
     file: UploadFile,
     token: dict = Depends(verify_token),
-):
+) -> dict[str, Any]:
     """自分の個別ソースとしてファイルを登録し、AIが検索できるようベクトル化する。
 
     誰が使えるか（権限ルール）:
