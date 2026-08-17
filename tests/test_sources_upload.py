@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from app import database, storage, upload_paths
 from app.main import app
 from app.routers import sources_router
-from app.routers.auth_router import require_admin
+from app.routers.auth_router import require_source_uploader
 
 
 @pytest.fixture
@@ -54,8 +54,12 @@ def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_db: None) -
 
     monkeypatch.setattr(sources_router, "_vectorize_and_save", fake_vectorize_and_save)
 
-    # 管理者チェックを通す（今回検証したいのは認証ではないため、ADMIN でログイン済みとみなす）
-    app.dependency_overrides[require_admin] = lambda: {"user_id": "ADMIN"}
+    # 権限チェックを通す（今回検証したいのは認証ではないため、ADMIN でログイン済みとみなす）
+    # role を入れているのは、ハンドラ内の check_scope_permission が token["role"] を見るため
+    app.dependency_overrides[require_source_uploader] = lambda: {
+        "user_id": "ADMIN",
+        "role": "admin",
+    }
 
     yield test_upload_dir
 

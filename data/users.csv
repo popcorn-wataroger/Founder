@@ -6,3 +6,4 @@ user_id,employee_code,name,department,gender,birth_date,family,hire_date,employm
 5,EMP004,鈴木愛,人事部,女性,1996-06-14,,2019-04-01,正社員,password,employee,
 6,EMP005,高橋翔,経理部,男性,1994-09-30,,2017-04-01,正社員,password,employee,
 7,EMP006,山田花子,広報部,女性,1999-01-20,,2022-04-01,正社員,password,employee,
+8,EMP007,中村総務,総務部,女性,1992-05-16,,2016-04-01,正社員,password,source_manager,
