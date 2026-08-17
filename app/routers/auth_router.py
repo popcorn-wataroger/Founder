@@ -221,6 +221,33 @@ async def login(req: LoginRequest):
         # ロール名は機密ではなく、改名時の取り残しを調べるのに要るのでログに残す。
         # ただしDB由来の値なので、改行を落としてから渡す（ログインジェクション対策。
         # 値に改行が混ざると、偽のログ行を丸ごと差し込まれて調査を欺かれる）
+        #
+        # CodeQL の py/clear-text-logging-sensitive-data について（誤検知と判断している）:
+        #     検出された経路（PR #103 の alert #22 / #23 で確認）
+        #         Source … 上の get_user_by_employee_code() の戻り値
+        #         Sink   … このログ出力に渡す user["user_id"] と safe_role
+        #
+        #     なぜ汚染扱いになるか:
+        #         get_user_by_employee_code() が返すのは data/users.csv の1行そのままで、
+        #         その辞書には password 列が含まれる。CodeQL は辞書全体を機密と見なすため、
+        #         そこから添字で取り出した値は、中身に関係なく機密として追跡される。
+        #         scripts/dev.py でシークレット名を print しないことにしたのと同じ現象
+        #         （あちらも SECRET_NAMES は定数だが、fetch_secret() へ渡す値の
+        #         供給元として汚染された）。
+        #
+        #     なぜ誤検知と判断できるか:
+        #         実際にログへ出るのは user_id（1〜8 の内部連番）とロール名だけで、
+        #         password の値は経路に一度も現れない。
+        #
+        #     なぜ値を落とさないか:
+        #         ロール改名時の取り残しを調べるには、どの社員にどの値が残っているかが必要。
+        #         値を落とすと user_roles テーブルを直接SELECTしないと調査できず、
+        #         このログを置いた目的（気づける形にする）が果たせない。
+        #
+        #     インライン抑制コメントは置かない。行末・直前の独立行のどちらでも
+        #     GitHub CodeQL Action 側で効かなかった前例があるため、
+        #     アラートは GitHub 上で dismiss する
+        #     （app/storage.py と app/upload_paths.py の py/path-injection と同じ扱い）。
         safe_role = str(role).replace("\r", "").replace("\n", "")
         logger.error(
             "未知のロールが解決されたためログインを拒否しました user_id=%s role=%s",
