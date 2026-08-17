@@ -1,6 +1,8 @@
 import csv
 from pathlib import Path
 
+from app.user_roles import get_role
+
 # CSVファイルのパス
 USERS_CSV_PATH = Path("data/users.csv")
 
@@ -25,6 +27,46 @@ def get_user_by_id(user_id: str) -> dict | None:
         if user["user_id"] == user_id:
             return user
     return None
+
+
+def resolve_role(user: dict) -> str:
+    """その社員の実効ロールを返す。DBの上書きがあればそれを、無ければCSVのroleを返す。
+
+    入力:
+        user … users.csv の1行分の辞書（get_user_by_employee_code などの戻り値）。
+                user_id と role を持っている前提
+
+    処理:
+        1. user_roles テーブルを user_id で引く（app/user_roles.py の get_role）
+        2. 上書きがあれば（None でなければ）その値を返す
+        3. 上書きが無ければ users.csv の role を返す
+
+    出力:
+        実際に権限判定へ使うロール名の文字列（employee / source_manager / admin）
+
+    なぜ「DBを正、CSVを既定値」とするのか:
+        users.csv はGit管理下にあり、初期状態を決めるための読み取り専用のファイル。
+        運用中にロールを変えるたびにCSVを書き戻すと差分が出て、
+        デプロイのたびにリポジトリの内容で上書きされてしまう。
+        そこで「変更は必ずDBに積む」形にし、CSVは
+        まだ一度も変更されていない社員の既定値として使う。
+        優先順位を逆にする（CSVを正にする）と、DBに記録した変更が
+        いつまでも効かず、変更した本人から見て何も起きていないように見える。
+
+    なぜ users.py に置くのか:
+        「この社員のロールは何か」は社員マスタの読み取りであって、
+        「そのロールで何ができるか」という権限判定とは別の話。
+        判定は app/routers/auth_router.py の can_upload_common_source() に
+        集約したままにして、こちらは値を1つに決めることだけを担当する。
+    """
+    # DBの上書きを先に見る（無ければ None が返る）
+    overridden_role = get_role(user["user_id"])
+    if overridden_role is not None:
+        return overridden_role
+
+    # 一度も変更されていない社員は、CSVに書いてある初期値をそのまま使う
+    role: str = user["role"]
+    return role
 
 
 # AIに渡してよい基本情報の項目と、その日本語ラベル。

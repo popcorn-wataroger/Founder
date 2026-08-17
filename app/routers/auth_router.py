@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.user_logins import record_login
-from app.users import get_user_by_employee_code
+from app.users import get_user_by_employee_code, resolve_role
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
@@ -20,6 +20,10 @@ security = HTTPBearer(auto_error=False)
 ROLE_ADMIN = "admin"
 ROLE_SOURCE_MANAGER = "source_manager"
 ROLE_EMPLOYEE = "employee"
+
+# 受け付けてよいロール名の全体。ロールを増やすときはここに足せば、
+# 検証している側（ロール変更API）は触らずに済む
+VALID_ROLES = frozenset({ROLE_ADMIN, ROLE_SOURCE_MANAGER, ROLE_EMPLOYEE})
 
 
 def create_access_token(user_id: str, role: str) -> str:
@@ -131,7 +135,7 @@ async def login(req: LoginRequest):
     出力:
         いずれの場合もHTTPステータスは200で、辞書の success で成否を表す。
 
-        成功時: {"success": True, "role": ロール（employee/admin）,
+        成功時: {"success": True, "role": 実効ロール（employee/source_manager/admin）,
                  "name": 氏名, "token": JWTアクセストークン}
         失敗時: {"success": False, "message": 画面に出すエラーメッセージ}
 
@@ -167,6 +171,24 @@ async def login(req: LoginRequest):
     # record_login の中で %s プレースホルダにバインドしている（SQL文へ埋め込まない）
     record_login(user["user_id"])
 
-    token = create_access_token(user_id=user["user_id"], role=user["role"])
+    # 実効ロールをここで1回だけ決める（DBの上書きがあればそれ、無ければCSVの値）。
+    #
+    # なぜログイン時に解決するのか:
+    #     JWTは発行したあとに中身を書き換えられない（書き換えると署名が合わなくなる）。
+    #     つまりロールはトークンに焼き付けられ、有効期限が切れるまでそのまま使われる。
+    #     ロールを変更しても、すでに配ったトークンには反映されない
+    #     ＝「次回ログインから有効になる」という仕様になる。
+    #     リクエストのたびにDBを引いて即時反映させることもできるが、
+    #     全APIがログインユーザーの分だけDBアクセスを増やすことになるため、
+    #     MVPでは反映の速さより単純さを取る。
+    #
+    # token とレスポンスで同じ role を使う理由:
+    #     レスポンスの role は画面の遷移先の判定（社員画面か管理者画面か）に使われ、
+    #     token の role はAPI側の権限判定に使われる。
+    #     この2つが食い違うと、管理者画面へ遷移したのにAPIが403を返す、
+    #     という噛み合わない状態になる。必ず同じ値を渡す
+    role = resolve_role(user)
 
-    return {"success": True, "role": user["role"], "name": user["name"], "token": token}
+    token = create_access_token(user_id=user["user_id"], role=role)
+
+    return {"success": True, "role": role, "name": user["name"], "token": token}

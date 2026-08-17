@@ -541,6 +541,20 @@ body {
 .detail-row:last-child { border-bottom: none; padding-bottom: 0; }
 .detail-label { color: var(--text-secondary); }
 .detail-value { font-weight: 500; }
+/* 権限の行だけは値ではなく操作（選択＋保存）を置くので、横並びの入れ物にする */
+.detail-role-control { display: flex; align-items: center; gap: 8px; }
+.detail-role-control select {
+  padding: 4px 8px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 12px;
+  color: var(--text);
+  font-family: inherit;
+}
+.detail-role-control select:focus { outline: none; border-color: var(--accent); }
+.detail-role-control button { padding: 5px 12px; font-size: 12px; }
+.detail-role-control button:disabled { opacity: 0.5; cursor: default; }
 .detail-chat-btn {
   width: 100%;
   margin-top: 20px;
@@ -871,7 +885,27 @@ body {
             <div class="detail-row"><span class="detail-label">生年月日</span><span class="detail-value" id="detail-birth-date"></span></div>
             <div class="detail-row"><span class="detail-label">家族構成</span><span class="detail-value" id="detail-family"></span></div>
             <div class="detail-row"><span class="detail-label">最終ログイン</span><span class="detail-value" id="detail-last-login"></span></div>
+            <!-- 権限（ロール）の表示と変更。選択中の値の反映と保存は admin.js が行う。
+                 保存ボタンは初期状態で disabled にし、選択が現在の値から変わったときだけ有効にする -->
+            <div class="detail-row">
+              <!-- <label for> ではなく aria-labelledby で結び付けているのは、
+                   他の detail-row がすべて <span class="detail-label"> で揃っているため。
+                   この行だけ <label> にするとマークアップの一貫性が崩れる -->
+              <span class="detail-label" id="detail-role-label">権限</span>
+              <span class="detail-value detail-role-control">
+                <select id="detail-role-select" aria-labelledby="detail-role-label" onchange="onRoleSelectChange()">
+                  <option value="employee">社員</option>
+                  <option value="source_manager">共通ソース管理者</option>
+                  <option value="admin">管理者</option>
+                </select>
+                <button class="btn btn-outline" id="detail-role-save" onclick="saveStaffRole()" disabled>保存</button>
+              </span>
+            </div>
           </div>
+          <!-- 権限変更の結果表示（ソース管理画面と同じ source-status を流用）。
+               detail-info の外に置いているのは、下線を消す .detail-row:last-child が
+               権限の行に効くようにするため -->
+          <div id="detail-role-status" class="source-status" style="margin:12px 0 0;"></div>
           <button class="detail-chat-btn" onclick="openAiChat()">このスタッフについてチャット</button>
         </div>
         <div class="detail-right">
