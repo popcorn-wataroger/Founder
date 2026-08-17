@@ -32,6 +32,7 @@ from app.routers.auth_router import (
     ROLE_SOURCE_MANAGER,
     create_access_token,
 )
+from app.user_logins import get_last_login_at
 from app.user_roles import get_role, set_role
 
 # テストで使う社員の user_id（users.csv の並びに対応する）
@@ -267,6 +268,12 @@ def test_未知のロールが記録された社員はログインできない(t
     message を認証失敗と同一にする理由:
         「ロールが不正です」と伝えると、内部の状態を外に漏らすことになる。
         原因はサーバーのログ（logger.error）から追う。
+
+    最終ログインが更新されないことも確かめる理由:
+        record_login() が記録するのは「最後に入れたのはいつか」を示す値なので、
+        ロール検証で拒否した相手の記録を作ってはいけない。
+        作ってしまうと、社員データ画面に「実際には入れていない時刻」が
+        最終ログインとして並んでしまう。
     """
     # set_role は渡された値をそのまま保存する（妥当性の判断は呼び出し側の責任）。
     # ここではAPIを通さず直接記録し、「DBに不正な値がある状態」を作る
@@ -283,6 +290,10 @@ def test_未知のロールが記録された社員はログインできない(t
     assert "role" not in body
     # どこで弾かれたかを外に漏らさないため、文言は通常の認証失敗と同じ
     assert body["message"] == "社員コードまたはパスワードが正しくありません"
+
+    # 入れていない以上、最終ログインも記録されない
+    # （temp_db で user_logins は空から始まるので、None のままなら記録されていない）
+    assert get_last_login_at(EMPLOYEE_USER_ID) is None
 
 
 def test_正常なロールが記録された社員はログインできる(temp_db: None) -> None:

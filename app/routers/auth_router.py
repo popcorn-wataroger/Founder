@@ -158,8 +158,8 @@ async def login(req: LoginRequest):
 
     処理:
         1. 入力チェック → 社員コードでユーザーを探す → パスワード照合
-        2. 認証に成功した場合だけ、最終ログイン日時を user_logins に記録する
-        3. 実効ロールを決め、受け付けてよいロール名かを検証する
+        2. 実効ロールを決め、受け付けてよいロール名かを検証する
+        3. ここまで通った場合だけ、最終ログイン日時を user_logins に記録する
         4. JWTアクセストークンを返す
 
     最終ログインを「成功時だけ」記録する理由:
@@ -178,11 +178,6 @@ async def login(req: LoginRequest):
 
     if user["password"] != req.password:
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
-
-    # 認証に成功したので、この社員の最終ログイン日時を更新する。
-    # user_id はログインしてきた側に由来する値なので、
-    # record_login の中で %s プレースホルダにバインドしている（SQL文へ埋め込まない）
-    record_login(user["user_id"])
 
     # 実効ロールをここで1回だけ決める（DBの上書きがあればそれ、無ければCSVの値）。
     #
@@ -257,6 +252,17 @@ async def login(req: LoginRequest):
         # 利用者へのメッセージは通常の認証失敗と同じにする。
         # 「ロールが不正です」と伝えると、内部の状態を外に漏らすことになる
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
+
+    # 認証にもロールの検証にも通ったので、この社員の最終ログイン日時を更新する。
+    # user_id はログインしてきた側に由来する値なので、
+    # record_login の中で %s プレースホルダにバインドしている（SQL文へ埋め込まない）
+    #
+    # なぜ検証の後ろに置くか:
+    #     この値は社員データ画面の「最後に入れたのはいつか」を示すもの
+    #     （app/user_logins.py の record_login の docstring を参照）。
+    #     ロールの検証で拒否した場合その人は入れていないので、記録してはいけない。
+    #     記録すると、実際には入れていない時刻が最終ログインとして並んでしまう。
+    record_login(user["user_id"])
 
     token = create_access_token(user_id=user["user_id"], role=role)
 
