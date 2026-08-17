@@ -116,6 +116,7 @@ GCS_BUCKET_NAME=<バケット名> uv run python scripts/dev.py
 | コード | ロール |
 |--------|--------|
 | `ADMIN` | 管理者（社長） |
+| `EMP007` | 共通ソース管理者 |
 | `EMP001` 〜 `EMP006` | 社員 |
 
 パスワード: `password`
