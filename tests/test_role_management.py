@@ -238,3 +238,66 @@ def test_変更したロールが次回ログインで反映される(temp_db: N
     payload = jwt.decode(body["token"], config.JWT_SECRET_KEY, algorithms=[config.JWT_ALGORITHM])
     assert payload["role"] == ROLE_SOURCE_MANAGER
     assert payload["user_id"] == EMPLOYEE_USER_ID
+
+
+# --- D. 実効ロールの検証（未知のロール名を拒否する）-----------------------------
+
+
+def _login(employee_code: str, password: str = "password"):
+    """ログインAPIを叩く（テスト用の短縮形）。"""
+    return TestClient(app).post(
+        "/api/login",
+        json={"employee_code": employee_code, "password": password},
+    )
+
+
+def test_未知のロールが記録された社員はログインできない(temp_db: None) -> None:
+    """user_roles に VALID_ROLES に無い値が入っていたら、ログインを拒否する。
+
+    なぜこのテストが必要か:
+        ロール名を改名したのに古い行が残っている、DBを直接書き換えた、といった場合に、
+        権限判定が知らない値がJWTへ焼き付けられてしまう。
+        そのユーザーは「どの権限にも当てはまらない状態」でログインでき、
+        以後の挙動が読めなくなる。入口で止めることを固定する。
+
+    token と role を返さないことを確かめる理由:
+        ここが要点。認証できていない相手にトークンやロールを渡していないことを見る。
+        返してしまうと、不正な状態のまま以降のAPIを叩ける経路が残る。
+
+    message を認証失敗と同一にする理由:
+        「ロールが不正です」と伝えると、内部の状態を外に漏らすことになる。
+        原因はサーバーのログ（logger.error）から追う。
+    """
+    # set_role は渡された値をそのまま保存する（妥当性の判断は呼び出し側の責任）。
+    # ここではAPIを通さず直接記録し、「DBに不正な値がある状態」を作る
+    set_role(EMPLOYEE_USER_ID, "manager", updated_by=ADMIN_USER_ID)
+
+    response = _login("EMP001")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["success"] is False
+    # 認証できていない相手には、トークンもロールも渡さない
+    assert "token" not in body
+    assert "role" not in body
+    # どこで弾かれたかを外に漏らさないため、文言は通常の認証失敗と同じ
+    assert body["message"] == "社員コードまたはパスワードが正しくありません"
+
+
+def test_正常なロールが記録された社員はログインできる(temp_db: None) -> None:
+    """検証を足したことで、正しいロールのログインまで塞いでいないことを確かめる。
+
+    拒否側だけを固定すると、条件を厳しくしすぎたときに気づけない。
+    通る側も一緒に固定しておく。
+    """
+    set_role(EMPLOYEE_USER_ID, ROLE_SOURCE_MANAGER, updated_by=ADMIN_USER_ID)
+
+    response = _login("EMP001")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["success"] is True
+    assert body["role"] == ROLE_SOURCE_MANAGER
+    assert body["token"]
