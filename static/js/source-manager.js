@@ -45,6 +45,19 @@ function smAuthHeaders(extra) {
   return Object.assign({ Authorization: `Bearer ${token}` }, extra || {});
 }
 
+// 登録リクエストが進行中かどうか。ファイル登録とURL登録で共有する
+//
+// なぜ共有するか（重要）:
+//     POST /api/sources/upload と POST /api/sources/url は非冪等。
+//     同じ要求を2回処理すると、DBに2行・Qdrantに2組のベクトルが作られる。
+//     しかも source_manager にはソース一覧が見えないため（Issue #101）、
+//     重複に気づく手段が画面上に無い。入口で防ぐ必要がある。
+//
+//     ファイルとURLで別々のフラグにしないのは、片方の処理中にもう片方を
+//     押せてしまうと、同じ #sm-status を2つの処理が奪い合い、
+//     どちらの結果が最後に残るか分からなくなるため。
+let commonSourceRequestInFlight = false;
+
 // 「+ アップロード」ボタンとアップロードゾーンのクリックから、隠しinputを開く
 function openCommonSourcePicker() {
   document.getElementById("sm-file-input").click();
@@ -82,7 +95,9 @@ function onCommonSourceDrop(event) {
 //     413 … 50MBを超えるファイル
 //     500 … 保存・ベクトル化の失敗（この場合サーバー側でソース登録は取り消される）
 async function uploadCommonSource(file) {
-  if (!file) return;
+  // 進行中なら何もしない（ダブルクリックや連続ドロップでの二重登録を防ぐ）
+  if (!file || commonSourceRequestInFlight) return;
+  commonSourceRequestInFlight = true;
 
   const formData = new FormData();
   formData.append("file", file);
@@ -101,6 +116,10 @@ async function uploadCommonSource(file) {
   } catch (e) {
     setCommonSourceStatus(e.message, "error");
   } finally {
+    // 成功・失敗のどちらでも必ず解除する。
+    // try の中で return や throw が起きても finally は実行されるため、
+    // 「フラグが立ったまま二度と登録できない」状態にならない
+    commonSourceRequestInFlight = false;
     // 同じファイルを連続で選べるようにinputをリセットする
     // （リセットしないと2回目に onchange が発火しない）
     document.getElementById("sm-file-input").value = "";
@@ -117,14 +136,20 @@ async function uploadCommonSource(file) {
 // 画面側で形式を検査しても、APIを直接叩かれれば意味がないため、
 // ここでは空欄チェックだけにして判定を二重に持たない。
 async function registerCommonUrl() {
+  // 進行中なら何もしない（連打での二重登録を防ぐ）
+  if (commonSourceRequestInFlight) return;
+
   const input = document.getElementById("sm-url-input");
   const url = input.value.trim();
 
+  // 空欄チェックはフラグを立てる前に行う。
+  // 通信しないので、ここで立てると解除する場所が増えるだけになる
   if (!url) {
     setCommonSourceStatus("URLを入力してください", "error");
     return;
   }
 
+  commonSourceRequestInFlight = true;
   setCommonSourceStatus("URLを登録中...", "loading");
   try {
     const res = await fetch("/api/sources/url", {
@@ -139,6 +164,9 @@ async function registerCommonUrl() {
     input.value = "";
   } catch (e) {
     setCommonSourceStatus(e.message, "error");
+  } finally {
+    // 成功・失敗のどちらでも必ず解除する
+    commonSourceRequestInFlight = false;
   }
 }
 
