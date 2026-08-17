@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app import storage
 from app.database import get_connection
-from app.routers.auth_router import require_admin
+from app.routers.auth_router import ROLE_ADMIN, require_admin
 from app.upload_paths import build_save_name, sanitize_upload_name
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
 from app.vectorizer import embed_text, extract_text, split_into_chunks
@@ -107,6 +107,44 @@ def validate_scope(scope: str, owner_user_id: str | None) -> None:
         )
     if scope == "individual" and not owner_user_id:
         raise HTTPException(status_code=400, detail="individual の場合は owner_user_id が必須です")
+
+
+def check_scope_permission(role: str, scope: str) -> None:
+    """登録しようとしているソース種別（scope）を、その役割（role）が扱えるかを確かめる。
+
+    入力:
+        role  … ログインしている人のロール名（JWTの role）
+        scope … 登録しようとしているソース種別（'common' か 'individual'）
+
+    処理:
+        scope が 'individual' のときだけ、role が ROLE_ADMIN かどうかを見る。
+        個別ソースは特定の社員に紐づく資料（評価・給与など）なので、社長だけに許す。
+        scope が 'common' のときは何もしない。
+        入口の require_source_uploader で admin / source_manager に絞り込み済みで、
+        そのどちらも共通ソースを登録してよいため、ここで重ねて弾く必要がない。
+
+    出力:
+        なし。問題があれば HTTPException(403) を投げる。
+        「返り値で可否を伝える」形にしないのは、呼び出し側が結果を見忘れても
+        処理が進んでしまう余地を残さないため（例外なら必ずそこで止まる）。
+
+    なぜ既存の validate_scope() に混ぜず別関数にしたか:
+        validate_scope は「リクエストの形式が正しいか」を見る関数で、
+        おかしければ 400（クライアントの送り方が悪い）を返す。
+        こちらは「その人に権限があるか」を見る関数で、無ければ 403（送り方は正しいが
+        許可されていない）を返す。400 と 403 は利用者に伝える意味が異なるため、
+        同じ関数に同居させると、名前から中身が予想できなくなる。
+        呼ぶ順番も「形式の検証 → 権限の判定」で固定できる。
+
+    なぜ Depends ではなく関数内で判定するのか:
+        require_source_uploader のような Depends はリクエストのヘッダ（JWT）だけで
+        判定できるので、ハンドラに入る前に実行できる。
+        一方 scope はフォームやリクエストボディの値で、Depends が動く時点では
+        まだ読み取っていない。そのため scope を使う判定は、
+        値が揃ったあとのハンドラ内部で呼ぶ必要がある。
+    """
+    if scope == "individual" and role != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="個別ソースを登録できるのは管理者のみです")
 
 
 def _sanitize_for_log(value: object) -> str:
