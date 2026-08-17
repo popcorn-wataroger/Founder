@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -10,6 +11,8 @@ from app.user_logins import record_login
 from app.users import get_user_by_employee_code, resolve_role
 
 router = APIRouter(prefix="/api", tags=["auth"])
+
+logger = logging.getLogger(__name__)
 
 # Bearerトークンを取り出す仕組み（auto_error=Falseで401を自分でコントロール）
 security = HTTPBearer(auto_error=False)
@@ -144,10 +147,20 @@ async def login(req: LoginRequest):
         message は「社員コードまたはパスワードが正しくありません」で統一しており、
         どちらが間違っているかは伝えない（存在する社員コードを推測されないため）。
 
+        失敗になるのは次の3つ。
+        - 社員コードかパスワードが未入力
+        - 社員コードが見つからない、またはパスワードが一致しない
+        - 実効ロールが VALID_ROLES に無い（user_roles テーブルに未知のロール名が
+          記録されている場合など）
+        最後のケースも message を認証失敗と同一にしているのは、
+        「ロールが不正です」と伝えると内部の状態を外に漏らすことになるため。
+        原因はサーバーのログ（logger.error）から追う。
+
     処理:
         1. 入力チェック → 社員コードでユーザーを探す → パスワード照合
         2. 認証に成功した場合だけ、最終ログイン日時を user_logins に記録する
-        3. JWTアクセストークンを返す
+        3. 実効ロールを決め、受け付けてよいロール名かを検証する
+        4. JWTアクセストークンを返す
 
     最終ログインを「成功時だけ」記録する理由:
         失敗も記録すると、パスワードを間違えただけの試行や、
@@ -188,6 +201,35 @@ async def login(req: LoginRequest):
     #     この2つが食い違うと、管理者画面へ遷移したのにAPIが403を返す、
     #     という噛み合わない状態になる。必ず同じ値を渡す
     role = resolve_role(user)
+
+    # 実効ロールが「受け付けてよいロール名」かをここで確かめる。
+    #
+    # なぜ resolve_role() の中ではなく login() で検証するのか:
+    #     resolve_role() は「実効ロールの値を1つに決める」ことだけを担当している。
+    #     「そのロール名を受け付けてよいか」は権限の話で、判定は auth_router に
+    #     集約してある（app/users.py の docstring にも明記している）。
+    #     users.py で VALID_ROLES を参照すると users → routers の依存が生まれ、
+    #     いまの routers → users という一方向の流れが逆流する。
+    #     ここで弾いておけば、不正な値がJWTに焼き付く経路そのものが閉じる。
+    #
+    # どこから不正な値が入りうるか:
+    #     user_roles テーブルの role 列。ロール名を改名したのに古い行が残っている、
+    #     DBを直接書き換えた、といった場合に、権限判定が知らない値が返る。
+    #     そのままトークンにすると「どの権限にも当てはまらない状態」でログインでき、
+    #     以後の挙動が読めなくなる。
+    if role not in VALID_ROLES:
+        # ロール名は機密ではなく、改名時の取り残しを調べるのに要るのでログに残す。
+        # ただしDB由来の値なので、改行を落としてから渡す（ログインジェクション対策。
+        # 値に改行が混ざると、偽のログ行を丸ごと差し込まれて調査を欺かれる）
+        safe_role = str(role).replace("\r", "").replace("\n", "")
+        logger.error(
+            "未知のロールが解決されたためログインを拒否しました user_id=%s role=%s",
+            user["user_id"],
+            safe_role,
+        )
+        # 利用者へのメッセージは通常の認証失敗と同じにする。
+        # 「ロールが不正です」と伝えると、内部の状態を外に漏らすことになる
+        return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
 
     token = create_access_token(user_id=user["user_id"], role=role)
 
