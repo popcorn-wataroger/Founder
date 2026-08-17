@@ -49,8 +49,8 @@ def init_db() -> None:
     """データベースの初期化（テーブル作成）。
 
     入力: なし（接続先は get_connection 経由で DATABASE_URL から決まる）
-    処理: with closing(get_connection()) as conn: で接続し、4テーブル
-          （sources / chat_sessions / chat_messages / user_logins）を
+    処理: with closing(get_connection()) as conn: で接続し、5テーブル
+          （sources / chat_sessions / chat_messages / user_logins / user_roles）を
           CREATE TABLE IF NOT EXISTS で作り、commit して確定する
           （commit は with ブロックの内側で行い、close は with を抜けるときに任せる）
     出力: なし（副作用としてテーブルが作られる）
@@ -101,6 +101,17 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS user_logins (
                 user_id       TEXT PRIMARY KEY,
                 last_login_at TEXT NOT NULL
+            )
+        """)
+        # ロールの上書き。user_logins と同じ理由で、
+        # 運用中に変わる値は読み取り専用のCSVではなくDB側に持つ（1社員1行）。
+        # 誰がいつ変えたかを残すため updated_at / updated_by も一緒に持つ
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_roles (
+                user_id    TEXT PRIMARY KEY,
+                role       TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                updated_by TEXT NOT NULL
             )
         """)
         conn.commit()

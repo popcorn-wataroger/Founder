@@ -25,8 +25,8 @@ from app.config import DATABASE_URL
 
 # テストのたびに空にするテーブル。
 # 外部キーで繋がっている（chat_messages → chat_sessions）ため、
-# 4つまとめて1文で TRUNCATE する
-TEST_TABLES = ("sources", "chat_sessions", "chat_messages", "user_logins")
+# 5つまとめて1文で TRUNCATE する
+TEST_TABLES = ("sources", "chat_sessions", "chat_messages", "user_logins", "user_roles")
 
 _NO_DATABASE_URL_MESSAGE = (
     "DATABASE_URL が設定されていないため、DBを使うテストを実行できません。"
@@ -59,7 +59,7 @@ def _wrong_database_message(database_name: str) -> str:
 
 
 def _truncate_all_tables() -> None:
-    """テスト用DBの4テーブルを空にし、IDの採番も1に戻す。
+    """テスト用DBの5テーブルを空にし、IDの採番も1に戻す。
 
     入力: なし（接続先は DATABASE_URL）
     処理: 接続先がテスト用DBか確認してから TRUNCATE する
@@ -113,7 +113,7 @@ def temp_db() -> Iterator[None]:
     処理:
         1. DATABASE_URL が設定されているか確かめる
         2. init_db() でテーブルを用意する（既にあれば何も起きない）
-        3. 4テーブルを空にして、IDの採番も1に戻す
+        3. 5テーブルを空にして、IDの採番も1に戻す
         4. テストへ処理を渡す
 
     なぜ function スコープ（テストごと）か:
