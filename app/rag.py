@@ -115,12 +115,21 @@ def _build_prompt(question: str, chunks: list[str], profile: str | None = None) 
     )
 
 
-def answer_question(question: str, role: str) -> tuple[str, list[str]]:
+def answer_question(
+    question: str, role: str, self_user_id: str | None = None
+) -> tuple[str, list[str]]:
     """質問を受け取り、社内文書に基づいたAIの回答文と参照ソースIDを返す（RAGの中核）。
 
     入力:
-        question … ユーザーからの質問テキスト
-        role     … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
+        question     … ユーザーからの質問テキスト
+        role         … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
+        self_user_id … 質問した本人の user_id。
+                       社員が「自分の個別ソース」も検索対象に含めるために使う。
+                       省略時（None）は共通ソースのみ（従来どおり）。
+
+                       必ず JWT の user_id を渡すこと。リクエスト由来の値を
+                       渡してはならない。渡すと、社員が他人の user_id を送るだけで
+                       その人の個別ソース（評価・給与）を読めてしまう。
 
     出力:
         (回答文, 参照した source_id のリスト) のタプル
@@ -138,10 +147,16 @@ def answer_question(question: str, role: str) -> tuple[str, list[str]]:
     なぜ role を検索まで渡すか:
         社員には共通ソースだけを検索させるため。ここで絞らないと、
         他人の個別ソース（評価・給与など）が回答の根拠に混ざってしまう。
+
+    target_user_id との違い（answer_question_stream を参照）:
+        target_user_id は社長が画面で選んだ「相手」を指す値で、
+        require_admin で守られた経路（社員データ画面）からのみ渡る。
+        self_user_id が指すのは常に本人自身で、社員の経路からも渡る。
+        指し示す相手が違うので、引数も分けている。
     """
     # 1. 質問に意味が近い社内文書のチャンクを、権限に応じた範囲から検索する
     #    戻り値は [{"text": 本文, "source_id": ソースID}, ...] の形
-    hits = search(question, role=role, top_k=TOP_K)
+    hits = search(question, role=role, top_k=TOP_K, self_user_id=self_user_id)
 
     # 2. 関連する文書が1件も無ければ、無理に生成せず定型文を返す
     #    （根拠が無いのにAIが答えると、誤情報を生みやすいため）
@@ -184,6 +199,7 @@ def answer_question_stream(
     role: str,
     target_user_id: str | None = None,
     profile: str | None = None,
+    self_user_id: str | None = None,
 ) -> tuple[list[str], Iterator[str]]:
     """質問を受け取り、参照ソースIDと「回答を少しずつ生み出す入れ物」を返す（ストリーミング版）。
 
@@ -194,6 +210,19 @@ def answer_question_stream(
                          省略時（None）は従来どおり、role だけで検索範囲が決まる
         profile        … 対象社員の基本情報（app.users.format_user_profile が作った文字列）。
                          社員データ画面からの質問のときだけ渡す。通常のチャットでは None
+        self_user_id   … 質問した本人の user_id。
+                         社員が「自分の個別ソース」も検索対象に含めるために使う。
+                         省略時（None）は共通ソースのみ（従来どおり）。
+
+                         必ず JWT の user_id を渡すこと。リクエスト由来の値を
+                         渡してはならない。渡すと、社員が他人の user_id を送るだけで
+                         その人の個別ソース（評価・給与）を読めてしまう。
+
+                         target_user_id との違い:
+                         target_user_id は社長が画面で選んだ「相手」を指す値で、
+                         require_admin で守られた経路からのみ渡る。
+                         self_user_id が指すのは常に本人自身で、社員の経路からも渡る。
+                         指し示す相手が違うので、引数も分けている。
 
     出力:
         (参照した source_id のリスト, 回答テキストの断片を順に取り出せるイテレータ)
@@ -239,7 +268,13 @@ def answer_question_stream(
     """
     # 1. 質問に意味が近い社内文書のチャンクを、権限に応じた範囲から検索する
     #    target_user_id を渡した場合は「共通 ＋ その社員の個別」だけが対象になる
-    hits = search(question, role=role, top_k=TOP_K, target_user_id=target_user_id)
+    hits = search(
+        question,
+        role=role,
+        top_k=TOP_K,
+        target_user_id=target_user_id,
+        self_user_id=self_user_id,
+    )
 
     # 2. 参考にできる情報が1つも無ければ、生成せず定型文を1回だけ流して終わる
     #    （文書が0件でも、対象社員の基本情報があればそれを根拠に生成できるので続行する）

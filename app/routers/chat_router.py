@@ -195,7 +195,13 @@ async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
     session_id = _resolve_session(req.session_id, user_id)
 
     # 4. RAGの中核関数に質問と role を渡し、回答文と参照ソースIDを生成してもらう
-    answer, referenced_sources = answer_question(question, role=role)
+    #
+    #    self_user_id には必ず token（JWT）から取り出した user_id を渡す。
+    #    req.session_id のようなリクエストボディ由来の値を渡してはならない。
+    #    渡してしまうと、社員が他人の user_id を送るだけで、
+    #    その人の個別ソース（評価・給与）を読めてしまう。
+    #    JWTは署名付きで改ざんできないため、ここから取り出した値だけが信用できる
+    answer, referenced_sources = answer_question(question, role=role, self_user_id=user_id)
 
     # 5. 質問と回答を履歴として記録する（セッションが用意できていた場合のみ）
     if session_id is not None:
@@ -344,7 +350,15 @@ async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
 
     # 4. 参照ソースID（確定値）と、本文の断片を順に取り出せる入れ物を受け取る
     #    この時点ではまだ生成は始まっていない（for で回した瞬間に生成が走る）
-    referenced_sources, chunk_iterator = answer_question_stream(question, role=role)
+    #
+    #    self_user_id には必ず token（JWT）から取り出した user_id を渡す。
+    #    req.session_id のようなリクエストボディ由来の値を渡してはならない。
+    #    渡してしまうと、社員が他人の user_id を送るだけで、
+    #    その人の個別ソース（評価・給与）を読めてしまう。
+    #    JWTは署名付きで改ざんできないため、ここから取り出した値だけが信用できる
+    referenced_sources, chunk_iterator = answer_question_stream(
+        question, role=role, self_user_id=user_id
+    )
 
     # 5. SSEの送信と履歴保存をまとめた関数を組み立てて、ストリーミング応答として返す
     event_stream = _build_event_stream(question, session_id, referenced_sources, chunk_iterator)
