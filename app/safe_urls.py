@@ -120,10 +120,6 @@ def build_safe_public_url(raw_url: str) -> str:
     if not host:
         raise ValueError("missing host")
 
-    # ホスト名の解決先が1つでも内部向けIPなら、通信せずに打ち切る
-    if not _resolved_ips_are_public(host):
-        raise ValueError("non-public host")
-
     # 不正なポート表記（例: http://example.com:abc/）は .port の参照時に例外になる
     try:
         port = parsed.port
@@ -133,6 +129,16 @@ def build_safe_public_url(raw_url: str) -> str:
     # user:pass@host 形式は、意図しない認証情報の送信につながるため拒否する
     if parsed.username or parsed.password:
         raise ValueError("credentials are not allowed")
+
+    # 文字列だけで判定できる検査を通ったあとに、通信を伴うDNS検査を行う。
+    #
+    # なぜ最後に置くか:
+    #     DNS解決は外部への通信を伴う。認証情報付きURLや不正なポートのように
+    #     必ず拒否されるURLでも先にDNSを引いてしまうと、攻撃者が指定した
+    #     任意のホスト名へ問い合わせを送ることになる。
+    #     文字列だけで判定できる検査を先に済ませれば、この無駄な通信が起きない。
+    if not _resolved_ips_are_public(host):
+        raise ValueError("non-public host")
 
     netloc = host if port is None else f"{host}:{port}"
     path = parsed.path or "/"

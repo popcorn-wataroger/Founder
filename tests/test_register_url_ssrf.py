@@ -152,14 +152,15 @@ def test_内部向けIPに解決されるURLは400で拒否される(
 # --- 認証情報付きURLの検査 ------------------------------------------------------
 
 
-def test_認証情報付きURLは400で拒否される(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_認証情報付きURLは400で拒否される() -> None:
     """user:pass@host 形式は、意図しない認証情報の送信につながるため拒否する。
 
-    名前解決を公開IPに差し替えているのは、IPの検査を通過させたうえで
-    認証情報の検査で弾かれることを確かめるため。
+    名前解決を差し替えていない理由:
+        認証情報の検査は、DNS解決より前に置いてある（app/safe_urls.py）。
+        文字列だけで判定できる検査を先に済ませることで、必ず拒否されるURLでも
+        攻撃者が指定したホスト名へDNS問い合わせを送ってしまうことを防いでいる。
+        差し替えなしで通るということ自体が、その順序が保たれている証拠になる。
     """
-    _patch_getaddrinfo(monkeypatch, "93.184.216.34")
-
     response = _register_url("https://user:pass@example.com/")
 
     assert response.status_code == 400, response.text
@@ -188,5 +189,24 @@ def test_拒否されたURLはDBに行を作らない(monkeypatch: pytest.Monkey
     monkeypatch.setattr(sources_router, "get_connection", fail_get_connection)
 
     response = _register_url("http://example.com/")
+
+    assert response.status_code == 400, response.text
+
+
+def test_内部IPに解決されるURLもDBに行を作らない(monkeypatch: pytest.MonkeyPatch) -> None:
+    """スキーム以外の検査（IP判定）もDB登録より前にあることを確かめる。
+
+    直前のテストは http:// を使っているため、スキーム検査の時点で弾かれる。
+    それだけだと、将来IP検査だけがDB登録の後ろへ移動しても気づけない。
+    スキーム検査を通過したうえでIP検査で弾かれるケースも固定しておく。
+    """
+
+    def fail_get_connection() -> None:
+        raise AssertionError("URLの検証より前にDBへ接続してはいけない")
+
+    monkeypatch.setattr(sources_router, "get_connection", fail_get_connection)
+    _patch_getaddrinfo(monkeypatch, "169.254.169.254")
+
+    response = _register_url("https://evil.example/")
 
     assert response.status_code == 400, response.text
