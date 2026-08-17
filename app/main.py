@@ -10,7 +10,7 @@ from app.routers import auth_router, chat_router, sources_router
 from app.routers.auth_router import VALID_ROLES, require_admin
 from app.user_logins import get_last_login_at
 from app.user_roles import set_role
-from app.users import get_user_by_id, users
+from app.users import get_user_by_id, resolve_role, users
 
 
 @asynccontextmanager
@@ -83,13 +83,14 @@ async def get_admin_user_detail(
 
     出力:
         基本情報の辞書（社員コード・氏名・部署・性別・生年月日・家族構成・
-        入社日・雇用形態・最終ログイン）
+        入社日・雇用形態・最終ログイン・実効ロール）
 
     処理:
         1. user_id で社員を1件探す。見つからなければ404
         2. role が admin なら404（下記の理由）
         3. 最終ログイン日時を user_logins テーブルから取り出す
-        4. 画面に出す項目だけを1つずつ書き出して返す
+        4. 実効ロールを resolve_role で決める（DBの上書きがあればそれ、無ければCSVの値）
+        5. 画面に出す項目だけを1つずつ書き出して返す
 
     なぜ最終ログインだけCSVではなくDBから読むか:
         users.csv の last_login_at 列は全員空のまま使っていない。
@@ -103,6 +104,16 @@ async def get_admin_user_detail(
         平文パスワードがAPIレスポンスに丸ごと乗ってしまう。
         「返す項目を1つずつ書き出す（ホワイトリスト方式）」にしておけば、
         将来CSVに列が増えても、書き出していない列は自動的に外に出ない。
+
+    なぜ role を返すようになったか:
+        社員データ画面でその社員のロールを表示し、変更するために必要になったため
+        （変更は PUT /api/admin/users/{user_id}/role）。
+        現在のロールが分からないと、画面は変更後の値を選ばせようがない。
+        このAPIは require_admin を付けた社長専用なので、
+        社員が他人のロールを知る経路にはならない。
+        なお、返すのは users.csv の role ではなく resolve_role の結果（実効ロール）。
+        CSVの値をそのまま返すと、DBで上書きしたロールが画面に反映されず、
+        「変更したのに変わっていない」ように見えてしまう。
 
     なぜ admin を404にするか:
         スタッフ一覧（GET /api/admin/users）が admin を除外しているため、
@@ -118,7 +129,10 @@ async def get_admin_user_detail(
     # 最終ログインはCSVではなくDBが持つ。記録が無ければ空文字（画面は「未記録」表示）
     last_login_at = get_last_login_at(user_id) or ""
 
-    # 画面に出す項目だけを明示的に書き出す（password と role は返さない）
+    # ロールはCSVの値ではなくDBの上書きを優先した「実効ロール」を返す
+    role = resolve_role(user)
+
+    # 画面に出す項目だけを明示的に書き出す（password は返さない）
     return {
         "user_id": user["user_id"],
         "employee_code": user["employee_code"],
@@ -130,6 +144,7 @@ async def get_admin_user_detail(
         "hire_date": user["hire_date"],
         "employment_type": user["employment_type"],
         "last_login_at": last_login_at,
+        "role": role,
     }
 
 

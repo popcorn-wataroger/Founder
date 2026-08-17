@@ -6,6 +6,8 @@
 
 何を守りたいか:
     1. パスワードなど、画面に不要な項目がレスポンスに混ざらないこと
+       （role は画面でロールを表示・変更するために必要なので返す。
+         このAPIは require_admin の社長専用で、社員には届かない）
     2. 他人の個別ソースや全社共通ソースが、その社員の欄に出てこないこと
     3. 社員（employee）がこれらのURLを叩いても拒否されること
 """
@@ -18,6 +20,7 @@ from fastapi.testclient import TestClient
 from app import database
 from app.main import app
 from app.routers.auth_router import create_access_token, require_admin
+from app.user_roles import set_role
 
 
 @pytest.fixture
@@ -71,16 +74,44 @@ def test_社員の基本情報が返る(client: TestClient, temp_db: None) -> No
         "hire_date",
         "employment_type",
         "last_login_at",
+        "role",
     }
 
 
-def test_パスワードとroleは返さない(client: TestClient, temp_db: None) -> None:
-    """CSVに password 列があるので、レスポンスに漏れていないことを固定する。"""
+def test_パスワードは返さない(client: TestClient, temp_db: None) -> None:
+    """CSVに password 列があるので、レスポンスに漏れていないことを固定する。
+
+    なぜ password は返さないのに role は返すのか:
+        password は画面のどこにも要らないうえ、漏れれば本人になりすませてしまう。
+        role は社員データ画面でその社員のロールを表示し、変更する
+        （PUT /api/admin/users/{user_id}/role）ために必要な値で、
+        現在のロールが分からないと画面は変更後の値を選ばせようがない。
+        このAPIは require_admin を付けた社長専用なので、
+        社員が他人のロールを知る経路にはならない。
+    """
     response = client.get("/api/admin/users/2")
 
     assert response.status_code == 200
     assert "password" not in response.json()
-    assert "role" not in response.json()
+
+
+def test_roleは実効ロールが返る(client: TestClient, temp_db: None) -> None:
+    """返る role は users.csv の値ではなく、DBの上書きを優先した実効ロール。
+
+    なぜ確かめるか:
+        CSVの値をそのまま返す実装にすると、ロールを変更しても画面に反映されず、
+        社長から見て「変更したのに変わっていない」状態になる。
+        どちらを正とするか（DBが正、CSVが既定値）を、ここで固定しておく。
+
+    EMP001（user_id=2）は users.csv では employee。
+    これを source_manager に上書きしてから叩く。
+    """
+    set_role("2", "source_manager", updated_by="1")
+
+    response = client.get("/api/admin/users/2")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["role"] == "source_manager"
 
 
 def test_存在しないuser_idは404(client: TestClient) -> None:
