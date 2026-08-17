@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app import storage
 from app.database import get_connection
-from app.routers.auth_router import ROLE_ADMIN, require_admin
+from app.routers.auth_router import ROLE_ADMIN, require_admin, require_source_uploader
 from app.upload_paths import build_save_name, sanitize_upload_name
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
 from app.vectorizer import embed_text, extract_text, split_into_chunks
@@ -323,12 +323,18 @@ async def upload_source(
     file: UploadFile,
     scope: str = Form("common"),
     owner_user_id: str | None = Form(None),
-    token: dict = Depends(require_admin),
+    token: dict = Depends(require_source_uploader),
 ):
     """ファイルをアップロードしてソースとして登録し、AIが検索できるようベクトル化する。
 
+    誰が使えるか（権限ルール）:
+        入口の require_source_uploader で admin / source_manager に絞る。
+        そのうえで、個別ソース（scope='individual'）の登録は
+        check_scope_permission が admin だけに限定する。
+        つまり source_manager は共通ソースだけを登録できる。
+
     処理:
-        1. 入力チェック（scope、ファイル名、拡張子、サイズ）
+        1. 入力チェック（scope、ファイル名、拡張子、サイズ）と scope の権限判定
         2. ストレージにファイルを保存する（保存先がGCSかローカルかは storage が決める）
         3. sources テーブルに登録し、source_id を採番する
         4. 本文を取り出してベクトル化し、Qdrantに保存する
@@ -339,7 +345,11 @@ async def upload_source(
         source_id はDBに登録して初めて採番される
         （GENERATED ALWAYS AS IDENTITY）ため、先にDB登録する。
     """
+    # 形式の検証（400）が先、権限の判定（403）が後。
+    # scope が common / individual のどちらかであると確定してから権限を見る
     validate_scope(scope, owner_user_id)
+    check_scope_permission(token["role"], scope)
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="ファイル名が取得できません")
     suffix = Path(file.filename).suffix.lower()
@@ -460,11 +470,16 @@ class UrlRequest(BaseModel):
 
 
 @router.post("/url")
-async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
+async def register_url(req: UrlRequest, token: dict = Depends(require_source_uploader)):
     """URLをソースとして登録し、AIが検索できるようベクトル化する。
 
+    誰が使えるか（権限ルール）:
+        upload_source と同じ。入口の require_source_uploader で
+        admin / source_manager に絞り、個別ソースの登録は
+        check_scope_permission が admin だけに限定する。
+
     処理:
-        1. 入力チェック（scope、URLの形式）
+        1. 入力チェック（scope、URLの形式）と scope の権限判定
         2. sources テーブルに登録し、source_id を採番する
         3. URLのページから本文を取り出してベクトル化し、Qdrantに保存する
         4. 3が失敗したら、2のDB登録を取り消して（ロールバック）エラーを返す
@@ -474,7 +489,10 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_admin)):
         ロールバック時も消すファイルが無いため、_rollback_source に save_path=None を渡す。
         本文の取得は extract_text が file_type='url' としてページを取りに行く。
     """
+    # 形式の検証（400）が先、権限の判定（403）が後。upload_source と同じ順番
     validate_scope(req.scope, req.owner_user_id)
+    check_scope_permission(token["role"], req.scope)
+
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="有効なURLを入力してください")
 
