@@ -310,6 +310,11 @@ async function loadStaffList() {
 let currentStaffUserId = null;
 let currentStaffName = "";
 
+// いま開いている社員の「保存済みのロール」。
+// select の値がこれと違うときだけ保存ボタンを有効にするために持つ
+// （変わっていないのに保存できると、押した側は何が起きたのか分からない）
+let currentStaffRole = "";
+
 // 値が空のときに画面へ出す代替文字
 const EMPTY_VALUE = "—";
 
@@ -408,6 +413,13 @@ function clearStaffDetail() {
     document.getElementById(id).textContent = "";
   });
 
+  // 権限の欄も初期状態に戻す。前の社員のロールが選ばれたまま残ると、
+  // 読み込みが終わる前に保存を押されて別人のロールを書き換えてしまう
+  currentStaffRole = "";
+  document.getElementById("detail-role-select").value = "employee";
+  document.getElementById("detail-role-save").disabled = true;
+  setStaffRoleStatus("", null);
+
   setStaffSourceStatus("", null);
   showPlaceholder(document.getElementById("detail-chat-logs"), "読み込み中...");
   showPlaceholder(document.getElementById("detail-sources"), "読み込み中...");
@@ -452,6 +464,132 @@ function renderStaffProfile(user) {
   setDetailText("detail-family", user.family);
   // 最終ログインは未記録（空）でも「—」ではなく「未記録」と出す
   document.getElementById("detail-last-login").textContent = formatLastLogin(user.last_login_at);
+
+  renderStaffRole(user.role);
+}
+
+/**
+ * 権限（ロール）の欄を、その社員の現在の値に合わせる。
+ *
+ * 入力: role … APIが返した実効ロール（employee / source_manager / admin）
+ * 出力: なし（select と保存ボタン、状態表示を書き換える）
+ *
+ * 別の社員を開いたときに前の状態が残らないよう、ここで毎回
+ * 保存ボタンを無効に戻し、前回のメッセージも消している。
+ *
+ * 知らない値が来たときに employee へ倒す理由:
+ *   select に無い値を入れるとブラウザは「何も選ばれていない」状態にする。
+ *   その状態で保存を押されると、画面に出ていない値が送られたように見えてしまう。
+ *   既定の employee を選んでおけば、画面の表示と送る値が必ず一致する。
+ *
+ * このUIを社員に出し分けない理由:
+ *   社員データ画面（管理者ホーム）自体が社長専用で、
+ *   ここに到達できる時点で admin であることは既に保証されている
+ *   （画面遷移はログイン時のロールで決まり、APIはすべて require_admin）。
+ *   出し分けを足すと同じ判定が画面側にも増え、どちらが本当の制限か分かりにくくなる。
+ *   権限の判定はサーバー側の1箇所に置いたままにする。
+ */
+function renderStaffRole(role) {
+  const select = document.getElementById("detail-role-select");
+  const known = ["employee", "source_manager", "admin"].includes(role);
+
+  currentStaffRole = known ? role : "employee";
+  select.value = currentStaffRole;
+
+  document.getElementById("detail-role-save").disabled = true;
+  setStaffRoleStatus("", null);
+}
+
+// 権限変更の状況を表示する（ソース管理画面と同じ source-status を流用）
+function setStaffRoleStatus(message, type) {
+  const el = document.getElementById("detail-role-status");
+  el.className = "source-status" + (type ? " " + type : "");
+  el.textContent = message || "";
+}
+
+// 選択が現在のロールから変わったときだけ保存ボタンを有効にする
+function onRoleSelectChange() {
+  const select = document.getElementById("detail-role-select");
+  document.getElementById("detail-role-save").disabled = select.value === currentStaffRole;
+}
+
+/**
+ * 選択したロールを保存する（PUT /api/admin/users/{user_id}/role）。
+ *
+ * 入力: なし（対象は currentStaffUserId、値は select の選択）
+ * 出力: なし（結果をメッセージで表示する）
+ *
+ * 処理:
+ *   1. 対象の社員と選択値を確定する
+ *   2. 保存ボタンを無効にしてから送る（二重送信の防止）
+ *   3. 成功したら保持している現在のロールを更新する
+ *   4. 表示中の社員が切り替わっていたら、結果を画面へ反映しない
+ *
+ * 「次にログインしたときから有効」と伝える理由:
+ *   ロールはログイン時に発行するJWTへ焼き付けられ、発行後は書き換えられない。
+ *   すでにログイン中の相手には反映されないので、そのことを画面に明示する
+ *   （黙っていると「変更したのに権限が変わらない」と受け取られる）。
+ *
+ * 途中で別の社員を開いた場合:
+ *   isStaffStillOpen で確認し、違っていればメッセージも状態も更新しない。
+ *   遅れて届いた結果で、いま開いている別人の画面を書き換えないため
+ *   （基本情報やソース一覧の読み込みと同じ考え方）。
+ */
+async function saveStaffRole() {
+  const button = document.getElementById("detail-role-save");
+  const select = document.getElementById("detail-role-select");
+
+  // 連打対策。処理中のボタンからの再実行は受け付けない
+  if (button.disabled) return;
+
+  const userId = currentStaffUserId;
+  if (!userId) {
+    setStaffRoleStatus("対象の社員が特定できません", "error");
+    return;
+  }
+
+  const role = select.value;
+
+  button.disabled = true;
+  setStaffRoleStatus("権限を変更中...", "loading");
+
+  try {
+    const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+      method: "PUT",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ role: role }),
+    });
+
+    // レスポンスがJSONとは限らないので、パースの失敗は握りつぶして空の入れ物にする
+    // （502や504のときは手前のプロキシがHTMLのエラーページを返すため。
+    //   uploadStaffSource と同じ理由・同じ書き方）
+    let data = {};
+    try {
+      const parsed = await res.json();
+      data = parsed && typeof parsed === "object" ? parsed : {};
+    } catch (e) {
+      data = {};
+    }
+
+    if (!res.ok) throw new Error(data.detail || "権限の変更に失敗しました");
+
+    // 保存中に別の社員を開いていたら、その画面には何も反映しない
+    if (!isStaffStillOpen(userId)) return;
+
+    // 保存できた値を「現在のロール」として持ち直す。
+    // これで select と一致するため、保存ボタンは無効のままになる
+    currentStaffRole = data.role || role;
+    select.value = currentStaffRole;
+    setStaffRoleStatus(
+      "権限を変更しました。対象の社員が次にログインしたときから有効になります。",
+      "success",
+    );
+  } catch (e) {
+    if (!isStaffStillOpen(userId)) return;
+    setStaffRoleStatus(e.message, "error");
+    // 失敗したので、もう一度押せる状態に戻す
+    button.disabled = select.value === currentStaffRole;
+  }
 }
 
 // その社員のチャットセッション一覧を取得して「最近のトーク内容」に表示する
