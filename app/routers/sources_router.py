@@ -60,6 +60,52 @@ async def list_sources(token: dict = Depends(require_admin)):
     return [dict(row) for row in rows]
 
 
+@router.get("/common")
+async def list_common_sources(
+    token: dict = Depends(require_source_uploader),
+) -> list[dict[str, Any]]:
+    """全社共通ソースだけを一覧で返す（社長・共通ソース管理者が使う）。
+
+    入力:
+        token … require_source_uploader が返すログイン情報
+                （admin か source_manager でなければ403で弾かれている）
+
+    出力:
+        共通ソースの一覧（登録日の新しい順）。
+        各件に source_id / file_name / file_type / uploaded_at を含む
+
+    使いどころ:
+        共通ソース管理者の専用画面（#screen-source-manager）の登録済み一覧。
+        自分が登録したものを確認し、二重登録に気づけるようにするための欄。
+
+    既存の GET /api/sources と分けた理由:
+        GET /api/sources は SELECT * で全ソースを返すため、他人の個別ソースの
+        ファイル名（「◯◯_評価2025.pdf」のように名前自体が見せてはいけない情報）や
+        file_path が含まれる。既存APIの依存を緩めて role で分岐させると、
+        1つの関数が2つの権限を持つことになり、条件を書き漏らした時の被害が大きい。
+        POST /api/sources/my-upload と同じく、入口を分けてそれぞれが1つのことだけを行う。
+
+    絞り込み条件について（権限ルール）:
+        WHERE scope = 'common' を必ず付ける。この条件が無いと個別ソースが混ざる。
+        owner_user_id は共通ソースでは常に NULL なので条件に使わない。
+
+    file_path を返さない理由:
+        サーバー内部の保存先パスで画面には不要。
+        GET /api/admin/users/{user_id}/sources と同じ方針。
+    """
+    with closing(get_connection()) as conn:
+        rows = conn.execute(
+            """
+            SELECT source_id, file_name, file_type, uploaded_at
+            FROM sources
+            WHERE scope = 'common'
+            ORDER BY uploaded_at DESC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
 @admin_router.get("/users/{user_id}/sources")
 async def list_user_sources(
     user_id: str, token: dict = Depends(require_admin)
