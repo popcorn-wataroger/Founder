@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app import storage
 from app.database import get_connection
 from app.routers.auth_router import ROLE_ADMIN, require_admin, require_source_uploader
+from app.safe_urls import build_safe_public_url
 from app.upload_paths import build_save_name, sanitize_upload_name
 from app.vector_store import delete_by_source_id, ensure_collection, save_chunks
 from app.vectorizer import embed_text, extract_text, split_into_chunks
@@ -479,13 +480,14 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_source_upl
         check_scope_permission が admin だけに限定する。
 
     処理:
-        1. 入力チェック（scope、URLの形式）と scope の権限判定
-        2. sources テーブルに登録し、source_id を採番する
-        3. URLのページから本文を取り出してベクトル化し、Qdrantに保存する
-        4. 3が失敗したら、2のDB登録を取り消して（ロールバック）エラーを返す
+        1. 入力チェック（scope）と scope の権限判定
+        2. URLを検証し、検証を通った要素だけで組み立て直す（build_safe_public_url）
+        3. sources テーブルに登録し、source_id を採番する
+        4. URLのページから本文を取り出してベクトル化し、Qdrantに保存する
+        5. 4が失敗したら、3のDB登録を取り消して（ロールバック）エラーを返す
 
     ファイルアップロードとの違い:
-        URLの場合は実ファイルを保存しないので、file_path にはURLをそのまま入れる。
+        URLの場合は実ファイルを保存しないので、file_path には検証済みのURLを入れる。
         ロールバック時も消すファイルが無いため、_rollback_source に save_path=None を渡す。
         本文の取得は extract_text が file_type='url' としてページを取りに行く。
     """
@@ -493,10 +495,27 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_source_upl
     validate_scope(req.scope, req.owner_user_id)
     check_scope_permission(token["role"], req.scope)
 
-    if not req.url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="有効なURLを入力してください")
+    # DB登録の前にURLを検証する（SSRF対策）。
+    #
+    # なぜ INSERT より前に置くか:
+    #     以前は startswith で前方一致を見るだけで、実質的な検証（スキーム・
+    #     内部IP・認証情報）はベクトル化の段階まで遅延していた。
+    #     そのため不正なURLでも一度DBに行が作られ、失敗してからロールバックされる。
+    #     ロールバック自体が失敗すれば、不正なURLの行が残る。
+    #     入口で弾けば、そもそも書き込みが起きない。
+    #
+    # なぜ検証済みの safe_url をDBと _vectorize_and_save の両方に渡すか:
+    #     生の req.url を保存すると、後で再取得するときに未検証の値が
+    #     使われることになる。検証を通った値だけを流す。
+    try:
+        safe_url = build_safe_public_url(req.url)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="有効なURLを入力してください。https:// で始まる外部の公開URLを指定してください",
+        )
 
-    display_name = req.file_name or req.url
+    display_name = req.file_name or safe_url
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
     with closing(get_connection()) as conn:
@@ -508,7 +527,7 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_source_upl
             VALUES (%s, 'url', %s, %s, %s, %s, %s)
             RETURNING source_id
             """,
-            (display_name, req.url, req.scope, req.owner_user_id, uploaded_at, token["user_id"]),
+            (display_name, safe_url, req.scope, req.owner_user_id, uploaded_at, token["user_id"]),
         )
         row = cursor.fetchone()
         conn.commit()
@@ -517,14 +536,16 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_source_upl
     # INSERT が成功していれば RETURNING は必ず1行返す。
     # None なら採番できていない＝本来ありえない状態なので、ここで止める
     if source_id is None:
-        raise RuntimeError(f"sources への INSERT で source_id が採番されませんでした url={req.url}")
+        raise RuntimeError(
+            f"sources への INSERT で source_id が採番されませんでした url={safe_url}"
+        )
 
     # URLのページ本文を取り出してベクトル化し、Qdrantに保存する
     # （ここまで成功して初めて「登録完了」。ファイルアップロードと同じ扱い）
     try:
         chunk_count = _vectorize_and_save(
             source_id=source_id,
-            path=req.url,  # URLの場合、本文の取得元はURLそのもの
+            path=safe_url,  # URLの場合、本文の取得元は検証済みのURL
             file_type="url",
             scope=req.scope,
             owner_user_id=req.owner_user_id,
@@ -542,7 +563,7 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_source_upl
     return {
         "success": True,
         "source_id": source_id,
-        "url": req.url,
+        "url": safe_url,
         "chunk_count": chunk_count,
     }
 

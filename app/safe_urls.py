@@ -107,8 +107,13 @@ def build_safe_public_url(raw_url: str) -> str:
     """
     parsed = urlsplit(raw_url)
 
-    # http / https 以外（file:// や gopher:// など）は最初から拒否する
-    if parsed.scheme.lower() not in {"http", "https"}:
+    # https 以外はすべて拒否する。
+    # http を許さない理由:
+    #     通信内容が暗号化されないため、経路上で書き換えられた内容をそのまま
+    #     ベクトル化して社内ナレッジに取り込んでしまう恐れがある。
+    #     また http:// は内部サービス（http://127.0.0.1:8000/ など）を
+    #     指す用途で使われやすく、SSRF の入口になりやすい。
+    if parsed.scheme.lower() != "https":
         raise ValueError("unsupported scheme")
 
     host = parsed.hostname

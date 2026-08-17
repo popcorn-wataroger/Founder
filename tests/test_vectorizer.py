@@ -55,10 +55,11 @@ def _patch_getaddrinfo(monkeypatch: pytest.MonkeyPatch, *ips: str) -> None:
         "file:///etc/passwd",  # ローカルファイルを読ませる攻撃
         "gopher://example.com/",  # 古いプロトコル経由の攻撃
         "ftp://example.com/",
+        "http://example.com/",  # 暗号化されない通信。内部サービスを指す用途でも使われる
         "example.com",  # スキームが無い
     ],
 )
-def test_非http_httpsスキームは拒否される(url: str) -> None:
+def test_https以外のスキームは拒否される(url: str) -> None:
     # スキーム検査で弾かれるため、名前解決も通信も行われずに ValueError になる
     with pytest.raises(ValueError):
         vectorizer._extract_url(url)
@@ -85,7 +86,7 @@ def test_内部向けIPに解決されるURLは拒否される(
     _patch_getaddrinfo(monkeypatch, ip)
     # 内部IPに解決されるURLは、requests.get に到達する前に打ち切られる
     with pytest.raises(ValueError):
-        vectorizer._extract_url("http://evil.example/")
+        vectorizer._extract_url("https://evil.example/")
 
 
 def test_公開IPと内部IPが混ざる場合も拒否される(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -96,7 +97,7 @@ def test_公開IPと内部IPが混ざる場合も拒否される(monkeypatch: py
     """
     _patch_getaddrinfo(monkeypatch, "93.184.216.34", "127.0.0.1")
     with pytest.raises(ValueError):
-        vectorizer._extract_url("http://evil.example/")
+        vectorizer._extract_url("https://evil.example/")
 
 
 # --- 名前解決に失敗した場合 ---
@@ -110,7 +111,7 @@ def test_名前解決に失敗したURLは拒否される(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(safe_urls.socket, "getaddrinfo", raise_gaierror)
     with pytest.raises(ValueError):
-        vectorizer._extract_url("http://not-exist.example/")
+        vectorizer._extract_url("https://not-exist.example/")
 
 
 # --- 公開IPに解決されるホスト名だけが「公開」と判定される ---
