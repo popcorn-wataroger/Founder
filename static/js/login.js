@@ -28,10 +28,28 @@ async function handleLogin() {
   // 保存したトークンは、以降のadmin API呼び出しで認証ヘッダに付ける
   localStorage.setItem("token", data.token);
 
+  // ロールごとに遷移先の画面を分ける。
+  //
+  // なぜ source_manager を管理者ホームへ通さないか（重要）:
+  //     #screen-admin にはスタッフ一覧・社員データ・AIチャットモーダルが同居しており、
+  //     さらに初期化の initSourceManagement() が GET /api/admin/users と
+  //     GET /api/sources を呼ぶ。どちらも require_admin なので source_manager では
+  //     403 になり、そのまま流用できない。
+  //     「不要な部分を隠して見せる」形にすると、隠し忘れがそのまま権限の穴になるため、
+  //     共通ソースの登録だけができる専用画面（#screen-source-manager）へ分けている。
+  //
+  // 未知のロールが返った場合:
+  //     いちばん権限の狭いチャット画面へ倒す（else 側）。
+  //     ロールが増えたときに、知らないロールが管理者画面や
+  //     ソース登録画面へ流れ込まないようにするため、危険側に倒さない。
   if (data.role === "admin") {
     showScreen("screen-admin");
     // 管理者ホームの初期タブ（ソース管理）を描画する
     initSourceManagement();
+  } else if (data.role === "source_manager") {
+    showScreen("screen-source-manager");
+    // 前の人の登録結果が残らないよう、ステータス表示をクリアする
+    initCommonSourceScreen();
   } else {
     showScreen("screen-chat");
     // 前回までの会話をサーバーから取り直して吹き出しを並べ直す。

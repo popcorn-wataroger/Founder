@@ -790,6 +790,63 @@ body {
   </div>
 </div>
 
+<!-- ===== SOURCE MANAGER SCREEN ===== -->
+<!-- 共通ソース管理者（source_manager）専用の画面。
+     管理者ホーム（#screen-admin）を出し分けて流用せず、独立した画面にしている。
+     あちらにはスタッフ一覧・社員データ・AIチャットモーダルが同居しており、
+     「隠す」方式では隠し忘れがそのまま権限の穴になる。
+     この画面には種別セレクトもスタッフ一覧のDOMも存在しないため、
+     個別ソースの登録UIが出ないことと、スタッフ一覧が出ないことが構造的に保証される。
+     scope は common 固定で、リクエストで指定できる経路そのものを作らない
+     （POST /api/sources/my-upload と同じ考え方）。 -->
+<div id="screen-source-manager" class="screen admin-screen">
+  <div class="sidebar">
+    <div class="sidebar-logo">F<span>.</span></div>
+    <div class="sidebar-badge">SOURCE</div>
+    <nav class="sidebar-nav">
+      <div class="sidebar-item active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <span>共通ソース登録</span>
+      </div>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="sidebar-user" onclick="logout()">
+        <div class="sidebar-user-avatar">総</div>
+        <div>
+          <div class="sidebar-user-name">共通ソース管理者</div>
+          <div class="sidebar-user-role">ログアウト</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main-content">
+    <div class="main-header">
+      <h1 class="main-title">共通ソース登録</h1>
+      <button class="btn btn-primary" onclick="openCommonSourcePicker()">+ アップロード</button>
+    </div>
+
+    <!-- ファイルアップロードゾーン（クリックで隠しinputを開く） -->
+    <input type="file" id="sm-file-input" accept=".pdf,.docx,.pptx,.txt" style="display:none" onchange="uploadCommonSource(this.files[0])">
+    <div class="upload-zone" id="sm-drop-zone" onclick="openCommonSourcePicker()" ondragover="onCommonSourceDragOver(event)" ondragleave="onCommonSourceDragLeave(event)" ondrop="onCommonSourceDrop(event)">
+      <div class="upload-icon">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </div>
+      <div class="upload-text">ファイルをドロップ、またはクリックして選択</div>
+      <div class="upload-hint">PDF, Word, PowerPoint, テキスト に対応（全社共通ソースとして登録されます）</div>
+    </div>
+
+    <!-- URL登録 -->
+    <div class="url-register">
+      <input type="url" id="sm-url-input" placeholder="https://example.com/page">
+      <button class="btn btn-outline" onclick="registerCommonUrl()">＋ URLを追加</button>
+    </div>
+
+    <!-- 処理中・エラー表示エリア -->
+    <div id="sm-status" class="source-status"></div>
+  </div>
+</div>
+
 <!-- ===== ADMIN SCREEN ===== -->
 <div id="screen-admin" class="screen admin-screen">
   <div class="sidebar">
@@ -984,6 +1041,7 @@ body {
 <script src="/static/js/login.js"></script>
 <script src="/static/js/chat.js"></script>
 <script src="/static/js/admin.js"></script>
+<script src="/static/js/source-manager.js"></script>
 
 <script>
 function showScreen(id) {
