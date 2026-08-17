@@ -21,6 +21,10 @@ ROLE_ADMIN = "admin"
 ROLE_SOURCE_MANAGER = "source_manager"
 ROLE_EMPLOYEE = "employee"
 
+# 受け付けてよいロール名の全体。ロールを増やすときはここに足せば、
+# 検証している側（ロール変更API）は触らずに済む
+VALID_ROLES = frozenset({ROLE_ADMIN, ROLE_SOURCE_MANAGER, ROLE_EMPLOYEE})
+
 
 def create_access_token(user_id: str, role: str) -> str:
     """JWTアクセストークンを生成する"""
