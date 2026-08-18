@@ -99,6 +99,11 @@ async function uploadCommonSource(file) {
   if (!file || commonSourceRequestInFlight) return;
   commonSourceRequestInFlight = true;
 
+  // 通信を始めた時点のログイン世代を控える（Issue #99）。
+  // 応答が返るまでにログアウトして別の人がログインしていた場合、
+  // その結果は前の人のものなので #sm-status には出さない。
+  const generation = currentLoginGeneration();
+
   const formData = new FormData();
   formData.append("file", file);
 
@@ -112,10 +117,14 @@ async function uploadCommonSource(file) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "アップロードに失敗しました");
 
+    if (!isSameLoginGeneration(generation)) return;
+
     setCommonSourceStatus(`「${data.file_name}」を全社共通ソースとして登録しました`, "success");
-    // 登録した1件を一覧に反映する（二重登録に気づけるようにするのがこのIssueの目的）
+    // 登録した1件を一覧に反映する（二重登録に気づけるようにするのがこのIssueの目的）。
+    // 世代が変わっている場合はここまで来ないので、別の人の画面で一覧を取り直すこともない
     loadCommonSources();
   } catch (e) {
+    if (!isSameLoginGeneration(generation)) return;
     setCommonSourceStatus(e.message, "error");
   } finally {
     // 成功・失敗のどちらでも必ず解除する。
@@ -152,6 +161,10 @@ async function registerCommonUrl() {
   }
 
   commonSourceRequestInFlight = true;
+
+  // 通信を始めた時点のログイン世代を控える（Issue #99）
+  const generation = currentLoginGeneration();
+
   setCommonSourceStatus("URLを登録中...", "loading");
   try {
     const res = await fetch("/api/sources/url", {
@@ -162,10 +175,15 @@ async function registerCommonUrl() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "URL登録に失敗しました");
 
+    if (!isSameLoginGeneration(generation)) return;
+
     setCommonSourceStatus("URLを全社共通ソースとして登録しました", "success");
+    // 入力欄のクリアも照合の内側に置く。
+    // 外に出すと、次にログインした人が入力中のURLを消してしまう
     input.value = "";
     loadCommonSources();
   } catch (e) {
+    if (!isSameLoginGeneration(generation)) return;
     setCommonSourceStatus(e.message, "error");
   } finally {
     // 成功・失敗のどちらでも必ず解除する

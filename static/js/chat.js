@@ -670,6 +670,15 @@ async function uploadMySource(file) {
   if (isUploadingMySource) return;
   isUploadingMySource = true;
 
+  // 通信を始めた時点のログイン世代を控える（Issue #99）。
+  //
+  // なぜ必要か:
+  //     この fetch は完了までに時間がかかる。その最中にログアウトして
+  //     別の社員がログインすると、応答が返った時点で #my-source-status に
+  //     前の人が選んだファイル名が表示されてしまう。
+  //     応答を受け取ったあとに世代を照合し、変わっていれば画面に出さない。
+  const generation = currentLoginGeneration();
+
   // 送るのはファイルだけ。scope や owner_user_id は付けない
   const formData = new FormData();
   formData.append("file", file);
@@ -689,15 +698,20 @@ async function uploadMySource(file) {
     // 未ログイン(401)・対応外の形式(400)・サイズ超過(413)などは、
     // サーバーの detail をそのまま出す。JSONで返らない場合も extractHttpError が定型文にする
     if (!res.ok) {
-      setMySourceStatus(await extractHttpError(res), "error");
+      // extractHttpError も通信を伴うため、読み終えてから世代を照合する
+      const message = await extractHttpError(res);
+      if (!isSameLoginGeneration(generation)) return;
+      setMySourceStatus(message, "error");
       return;
     }
 
     const data = await res.json();
+    if (!isSameLoginGeneration(generation)) return;
     // 成功時は必ず file_name が返るが、万一欠けていても選んだファイル名で表示する
     setMySourceStatus(`「${data.file_name || file.name}」を登録しました`, "success");
   } catch (e) {
     console.error(e);
+    if (!isSameLoginGeneration(generation)) return;
     setMySourceStatus("通信エラーが発生しました。接続を確認してください。", "error");
   } finally {
     isUploadingMySource = false;
