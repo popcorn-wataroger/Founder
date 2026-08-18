@@ -113,6 +113,8 @@ async function uploadCommonSource(file) {
     if (!res.ok) throw new Error(data.detail || "アップロードに失敗しました");
 
     setCommonSourceStatus(`「${data.file_name}」を全社共通ソースとして登録しました`, "success");
+    // 登録した1件を一覧に反映する（二重登録に気づけるようにするのがこのIssueの目的）
+    loadCommonSources();
   } catch (e) {
     setCommonSourceStatus(e.message, "error");
   } finally {
@@ -162,6 +164,7 @@ async function registerCommonUrl() {
 
     setCommonSourceStatus("URLを全社共通ソースとして登録しました", "success");
     input.value = "";
+    loadCommonSources();
   } catch (e) {
     setCommonSourceStatus(e.message, "error");
   } finally {
@@ -170,12 +173,142 @@ async function registerCommonUrl() {
   }
 }
 
-// 画面を開いたときの初期化。前回の結果表示を消す
+// 一覧取得リクエストの通し番号。最新のリクエストだけがDOMを更新するために使う
 //
 // なぜ必要か:
+//     loadCommonSources() は画面初期化時と登録成功後の2箇所から呼ばれ、
+//     これらは並行して走りうる。先に投げた古いリクエストが後から完了すると、
+//     登録直後の一覧を古い結果で上書きし、登録したはずのソースが
+//     一覧から一時的に消える。番号が最新でなければ描画しないことで防ぐ。
+let commonSourceListRequestId = 0;
+
+// 登録済みの共通ソースを取得して一覧に描画する
+//
+// 入力: なし
+// 処理: GET /api/sources/common を叩き、返ってきた配列を #sm-source-list に並べる
+// 出力: なし（一覧の表示が変わる）
+//
+// エラーになる場面:
+//     403 … source_manager でも admin でもないロールで叩いた場合
+//     通信失敗 … オフラインやサーバー停止
+//     どちらも一覧の中に文言を出すだけにして、#sm-status（登録結果の表示）は触らない。
+//     登録の成否と一覧の取得失敗が同じ場所に出ると、どちらの結果か分からなくなる。
+//
+// このAPIが返すのは scope='common' のものだけ。
+// 個別ソース（他人の評価・給与など）はファイル名も含めて1件も返らない。
+async function loadCommonSources() {
+  // このリクエストの番号を採番する。以降、最新かどうかをこの番号で判定する
+  const requestId = ++commonSourceListRequestId;
+  const container = document.getElementById("sm-source-list");
+  setCommonSourceListMessage("読み込み中...");
+
+  try {
+    const res = await fetch("/api/sources/common", { headers: smAuthHeaders() });
+    if (!res.ok) throw new Error("取得失敗");
+    const sources = await res.json();
+
+    // 待っている間に新しいリクエストが始まっていたら、この結果は捨てる
+    if (requestId !== commonSourceListRequestId) return;
+
+    if (sources.length === 0) {
+      setCommonSourceListMessage("登録された共通ソースはありません。");
+      return;
+    }
+
+    container.textContent = "";
+    sources.forEach((source) => {
+      container.appendChild(buildCommonSourceItem(source));
+    });
+  } catch (e) {
+    // 失敗の表示も同じ理由で、最新のリクエストのときだけ出す
+    if (requestId !== commonSourceListRequestId) return;
+    setCommonSourceListMessage("一覧の取得に失敗しました。");
+  }
+}
+
+// 一覧の中に1行だけの案内文（読み込み中・0件・失敗）を表示する
+//
+// 入力: message … 表示する文字列
+// 出力: なし
+function setCommonSourceListMessage(message) {
+  const container = document.getElementById("sm-source-list");
+  container.textContent = "";
+
+  const placeholder = document.createElement("div");
+  placeholder.className = "source-item-date";
+  placeholder.textContent = message;
+  container.appendChild(placeholder);
+}
+
+// 共通ソース1件分の行を組み立てて返す
+//
+// 入力: source … { source_id, file_name, file_type, uploaded_at }
+// 出力: 組み立てた要素（呼び出し側が一覧に追加する）
+//
+// innerHTML を使わない理由:
+//     file_name は登録した人が付けたファイル名で、タグを含む名前もあり得る。
+//     textContent で入れることで、文字として表示される（XSSにならない）。
+//
+// 削除ボタンを付けない理由（Issue #101 の方針）:
+//     DELETE /api/sources/{source_id} は require_admin のまま。
+//     共通ソースは全社員の回答根拠になるため、誤削除の影響範囲が登録より広い。
+//     一覧が見えれば二重登録には気づけるので、削除権限の付与は別の判断として切り離す。
+function buildCommonSourceItem(source) {
+  const item = document.createElement("div");
+  item.className = "source-item";
+
+  const info = document.createElement("div");
+  info.className = "source-item-info";
+
+  const icon = document.createElement("div");
+  icon.className = "source-item-icon tag-common";
+  icon.textContent = source.file_type;
+
+  const texts = document.createElement("div");
+
+  const name = document.createElement("div");
+  name.className = "source-item-name";
+  name.textContent = source.file_name;
+
+  const date = document.createElement("div");
+  date.className = "source-item-date";
+  date.textContent = formatCommonSourceDate(source.uploaded_at);
+
+  texts.appendChild(name);
+  texts.appendChild(date);
+  info.appendChild(icon);
+  info.appendChild(texts);
+  item.appendChild(info);
+
+  return item;
+}
+
+// 登録日時を「2026/01/15 09:30」の形に整える
+//
+// 入力: value … サーバーが返す日時文字列
+// 出力: 整形した文字列（解釈できない値はそのまま返す）
+//
+// admin.js の formatSourceDate() と同じ処理だが、あちらは管理者画面用のファイルなので
+// この画面から呼ぶと依存が逆流する。数行なのでこちらに持つ。
+function formatCommonSourceDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  const 月 = String(date.getMonth() + 1).padStart(2, "0");
+  const 日 = String(date.getDate()).padStart(2, "0");
+  const 時 = String(date.getHours()).padStart(2, "0");
+  const 分 = String(date.getMinutes()).padStart(2, "0");
+  return `${date.getFullYear()}/${月}/${日} ${時}:${分}`;
+}
+
+// 画面を開いたときの初期化。前回の結果表示を消し、登録済みの一覧を読み込む
+//
+// なぜステータスを消すか:
 //     ステータス表示はDOMに残り続ける。別の人がログインしたときに
 //     前の人が登録したファイル名が見えてしまうため、ログイン時にクリアする
 //     （Issue #74 / PR #97 でチャット画面に入れたのと同じ対応）。
 function initCommonSourceScreen() {
   setCommonSourceStatus("", null);
+  loadCommonSources();
 }

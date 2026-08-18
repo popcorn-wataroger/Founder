@@ -608,6 +608,13 @@ body {
   font-weight: 500;
 }
 .chat-log-more:hover { text-decoration: underline; }
+.sm-source-list-header {
+  margin-top: 28px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
 .source-item {
   display: flex;
   align-items: center;
@@ -844,6 +851,14 @@ body {
 
     <!-- 処理中・エラー表示エリア -->
     <div id="sm-status" class="source-status"></div>
+
+    <!-- 登録済みの共通ソース一覧（Issue #101）
+         GET /api/sources/common が返すのは scope='common' のものだけ。
+         管理者画面のテーブル（#source-tbody）を流用せず独立して持つのは、
+         あちらが種別・所有者・削除ボタンの列を持っており、
+         この画面に削除権限が無いため列構成が一致しないから。 -->
+    <div class="sm-source-list-header">登録済みの共通ソース</div>
+    <div id="sm-source-list" class="detail-section-body"></div>
   </div>
 </div>
 
