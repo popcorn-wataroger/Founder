@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
+# アップロードを読み進める単位（1MB）。
+# 一度に全体を読まず、この単位で区切って累計サイズを確かめる
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+
 # アップロードの入口で受け付ける拡張子。ユーザーが送ってきたファイル名を
 # ここで弾くための検査用なので、保存名の組み立て（app/upload_paths.py）とは役割が別
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
@@ -197,6 +201,51 @@ def check_scope_permission(role: str, scope: str) -> None:
     """
     if scope == "individual" and role != ROLE_ADMIN:
         raise HTTPException(status_code=403, detail="個別ソースを登録できるのは管理者のみです")
+
+
+async def read_upload_within_limit(file: UploadFile) -> bytes:
+    """アップロードされたファイルを、上限を超えた時点で打ち切りながら読み込む。
+
+    入力:
+        file … FastAPI が受け取った UploadFile
+
+    出力:
+        読み込んだファイル全体のバイト列（MAX_FILE_SIZE 以内）
+
+    例外:
+        HTTPException(413) … 累計サイズが MAX_FILE_SIZE を超えた場合
+
+    処理:
+        UPLOAD_CHUNK_SIZE ずつ読み進め、読むたびに累計サイズを確かめる。
+        上限を超えた時点で残りを読まずに 413 を投げる。
+
+    なぜ一度に read() しないか:
+        `await file.read()` は上限判定より先にファイル全体をメモリへ載せる。
+        50MB上限に対して1GBのファイルを送られると、拒否する前に1GBを消費し、
+        同時に複数送られると Cloud Run のメモリ上限に達してコンテナが再起動する。
+        再起動は他のリクエストも巻き込むため、「拒否する分は読まない」形にする。
+
+    なぜ両エンドポイントで共通の関数にするか:
+        upload_source() と upload_my_source() で判定がずれると、
+        入口によって通るサイズが違うという説明のつかない状態になる。
+        判定を1箇所に集約して「唯一の正解」にする。
+    """
+    chunks: list[bytes] = []
+    total_size = 0
+
+    while True:
+        chunk = await file.read(UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+
+        total_size += len(chunk)
+        # 上限を超えたら、残りを読まずにここで打ち切る
+        if total_size > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="ファイルサイズが50MBを超えています")
+
+        chunks.append(chunk)
+
+    return b"".join(chunks)
 
 
 def _sanitize_for_log(value: object) -> str:
@@ -411,9 +460,7 @@ async def upload_source(
             detail=f"対応していないファイル形式です。対応形式: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="ファイルサイズが50MBを超えています")
+    contents = await read_upload_within_limit(file)
 
     # ソース種別（pdf / docx / pptx / txt）。上のチェックを通っているので必ず対応表に存在する
     file_type = suffix.lstrip(".")
@@ -570,9 +617,7 @@ async def upload_my_source(
             detail=f"対応していないファイル形式です。対応形式: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="ファイルサイズが50MBを超えています")
+    contents = await read_upload_within_limit(file)
 
     # ソース種別（pdf / docx / pptx / txt）。上のチェックを通っているので必ず対応表に存在する
     file_type = suffix.lstrip(".")
