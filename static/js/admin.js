@@ -1291,6 +1291,15 @@ async function uploadStaffSource(file) {
   formData.append("scope", "individual");
   formData.append("owner_user_id", userId);
 
+  // 通信を始めた時点のログイン世代を控える（Issue #99）。
+  //
+  // isStaffStillOpen() との違い:
+  //     あちらは「同じログインの中で別の社員を開いていないか」を見る。
+  //     ログアウトして別の人がログインした場合、currentStaffUserId は
+  //     前の人が開いていた社員IDのまま残るため、あちらでは検知できない。
+  //     ログインの切り替わりはこの世代番号で判定する。
+  const generation = currentLoginGeneration();
+
   setStaffSourceStatus(`「${file.name}」をアップロード中...`, "loading");
   try {
     const res = await fetch("/api/sources/upload", {
@@ -1315,11 +1324,15 @@ async function uploadStaffSource(file) {
 
     if (!res.ok) throw new Error(data.detail || "アップロードに失敗しました");
 
+    // 別のログインに変わっていたら、この結果は前の人のものなので画面に出さない
+    if (!isSameLoginGeneration(generation)) return;
+
     // 成功時は必ず file_name が返るが、万一欠けていても選んだファイル名で表示する
     setStaffSourceStatus(`「${data.file_name || file.name}」を登録しました`, "success");
     // 登録した1件が一覧に出るよう取り直す（アップロード中に別の社員を開いていたら何もしない）
     if (isStaffStillOpen(userId)) await loadStaffSources(userId);
   } catch (e) {
+    if (!isSameLoginGeneration(generation)) return;
     setStaffSourceStatus(e.message, "error");
   } finally {
     // 同じファイルを続けて選べるようにinputをリセットする

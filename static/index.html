@@ -1053,6 +1053,7 @@ body {
   </div>
 </div>
 
+<script src="/static/js/session.js"></script>
 <script src="/static/js/login.js"></script>
 <script src="/static/js/chat.js"></script>
 <script src="/static/js/admin.js"></script>
@@ -1065,7 +1066,15 @@ function showScreen(id) {
 }
 
 
+// ログアウトしてログイン画面に戻る。
+//
+// 世代番号を進める理由（Issue #99）:
+//     アップロードの通信が進行中のままログアウトすると、応答が返った時点で
+//     前の人が選んだファイル名が画面に表示される。世代番号を進めておくと、
+//     応答を受け取った側が「別のログインに変わった」と判定して表示を止める。
+//     詳細は static/js/session.js を参照。
 function logout() {
+  beginLoginGeneration();
   showScreen('screen-login');
 }
 
