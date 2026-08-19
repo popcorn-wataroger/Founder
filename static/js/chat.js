@@ -11,8 +11,14 @@
 // 吹き出しが混ざるのを防ぐためのフラグ
 let isSending = false;
 
-// 資料をアップロード中かどうか。同じファイルを二重に登録しないためのフラグ
-let isUploadingMySource = false;
+// 資料をアップロード中のログイン世代。実行していないときは null（Issue #99）
+//
+// 真偽値ではなく世代番号を持つ理由:
+//     真偽値だと、前の人のアップロードが終わるまでフラグが true のままになり、
+//     ログアウトして次にログインした人が「連打」と判定されて弾かれる。
+//     しかも return するだけなので、その人には何のメッセージも出ない。
+//     どの世代が使用中かを持てば、同じ世代の連打だけを弾ける。
+let mySourceUploadGeneration = null;
 
 // 今つないでいる会話（セッション）のID。まだ会話が始まっていなければ null。
 //
@@ -646,7 +652,7 @@ function setMySourceStatus(message, type) {
  * 出力: なし（結果をメッセージで表示する）
  *
  * 処理:
- *   1. 連打を弾き、処理中フラグを立てる
+ *   1. 連打を弾き、実行中のログイン世代を記録する
  *   2. FormData にファイルだけを入れて POST /api/sources/my-upload に送る
  *   3. 結果を #my-source-status に表示する
  *   4. 終了時にファイル入力をリセットする
@@ -666,10 +672,6 @@ async function uploadMySource(file) {
   const input = document.getElementById("my-source-file-input");
   if (!file) return;
 
-  // アップロード中なら何もしない（連打対策。同じ資料が二重に登録されるのを防ぐ）
-  if (isUploadingMySource) return;
-  isUploadingMySource = true;
-
   // 通信を始めた時点のログイン世代を控える（Issue #99）。
   //
   // なぜ必要か:
@@ -678,6 +680,12 @@ async function uploadMySource(file) {
   //     前の人が選んだファイル名が表示されてしまう。
   //     応答を受け取ったあとに世代を照合し、変わっていれば画面に出さない。
   const generation = currentLoginGeneration();
+
+  // 同じログインの中でアップロード中なら何もしない
+  //（連打対策。同じ資料が二重に登録されるのを防ぐ）。
+  // 別のログインに変わっていれば、前の人の通信が続いていても受け付ける。
+  if (mySourceUploadGeneration === generation) return;
+  mySourceUploadGeneration = generation;
 
   // 送るのはファイルだけ。scope や owner_user_id は付けない
   const formData = new FormData();
@@ -714,7 +722,12 @@ async function uploadMySource(file) {
     if (!isSameLoginGeneration(generation)) return;
     setMySourceStatus("通信エラーが発生しました。接続を確認してください。", "error");
   } finally {
-    isUploadingMySource = false;
+    // 自分が取った分だけ解放する。
+    // 無条件に null にすると、あとから始まった新しい世代の
+    // アップロードまで「実行していない」ことにしてしまう。
+    if (mySourceUploadGeneration === generation) {
+      mySourceUploadGeneration = null;
+    }
     // 同じファイルを続けて選べるようにinputをリセットする
     input.value = "";
   }

@@ -53,10 +53,16 @@ function smAuthHeaders(extra) {
 //     しかも source_manager にはソース一覧が見えないため（Issue #101）、
 //     重複に気づく手段が画面上に無い。入口で防ぐ必要がある。
 //
-//     ファイルとURLで別々のフラグにしないのは、片方の処理中にもう片方を
+//     ファイルとURLで別々に持たないのは、片方の処理中にもう片方を
 //     押せてしまうと、同じ #sm-status を2つの処理が奪い合い、
 //     どちらの結果が最後に残るか分からなくなるため。
-let commonSourceRequestInFlight = false;
+//
+// 真偽値ではなく「実行中のログイン世代」を持つ理由（Issue #99）:
+//     真偽値だと、前の人の登録が終わるまで true のままになり、ログアウトして
+//     次にログインした人が「連打」と判定されて弾かれる。しかも return するだけなので
+//     その人には何のメッセージも出ない。どの世代が使用中かを持てば、
+//     同じ世代の連打だけを弾ける。実行していないときは null。
+let commonSourceRequestGeneration = null;
 
 // 「+ アップロード」ボタンとアップロードゾーンのクリックから、隠しinputを開く
 function openCommonSourcePicker() {
@@ -95,14 +101,17 @@ function onCommonSourceDrop(event) {
 //     413 … 50MBを超えるファイル
 //     500 … 保存・ベクトル化の失敗（この場合サーバー側でソース登録は取り消される）
 async function uploadCommonSource(file) {
-  // 進行中なら何もしない（ダブルクリックや連続ドロップでの二重登録を防ぐ）
-  if (!file || commonSourceRequestInFlight) return;
-  commonSourceRequestInFlight = true;
+  if (!file) return;
 
   // 通信を始めた時点のログイン世代を控える（Issue #99）。
   // 応答が返るまでにログアウトして別の人がログインしていた場合、
   // その結果は前の人のものなので #sm-status には出さない。
   const generation = currentLoginGeneration();
+
+  // 同じログインの中で進行中なら何もしない。
+  // 別のログインに変わっていれば、前の人の通信が続いていても受け付ける。
+  if (commonSourceRequestGeneration === generation) return;
+  commonSourceRequestGeneration = generation;
 
   const formData = new FormData();
   formData.append("file", file);
@@ -127,10 +136,16 @@ async function uploadCommonSource(file) {
     if (!isSameLoginGeneration(generation)) return;
     setCommonSourceStatus(e.message, "error");
   } finally {
-    // 成功・失敗のどちらでも必ず解除する。
+    // 成功・失敗のどちらでも必ず解放する。
     // try の中で return や throw が起きても finally は実行されるため、
-    // 「フラグが立ったまま二度と登録できない」状態にならない
-    commonSourceRequestInFlight = false;
+    // 「使用中のまま二度と登録できない」状態にならない。
+    //
+    // 自分が取った分だけ解放する理由:
+    //     無条件に null にすると、あとから始まった新しい世代の
+    //     登録まで「実行していない」ことにしてしまう。
+    if (commonSourceRequestGeneration === generation) {
+      commonSourceRequestGeneration = null;
+    }
     // 同じファイルを連続で選べるようにinputをリセットする
     // （リセットしないと2回目に onchange が発火しない）
     document.getElementById("sm-file-input").value = "";
@@ -147,23 +162,23 @@ async function uploadCommonSource(file) {
 // 画面側で形式を検査しても、APIを直接叩かれれば意味がないため、
 // ここでは空欄チェックだけにして判定を二重に持たない。
 async function registerCommonUrl() {
-  // 進行中なら何もしない（連打での二重登録を防ぐ）
-  if (commonSourceRequestInFlight) return;
-
   const input = document.getElementById("sm-url-input");
   const url = input.value.trim();
 
-  // 空欄チェックはフラグを立てる前に行う。
-  // 通信しないので、ここで立てると解除する場所が増えるだけになる
+  // 空欄チェックは世代を取る前に行う。
+  // 通信しないので、ここで取ると解放する場所が増えるだけになる
   if (!url) {
     setCommonSourceStatus("URLを入力してください", "error");
     return;
   }
 
-  commonSourceRequestInFlight = true;
-
   // 通信を始めた時点のログイン世代を控える（Issue #99）
   const generation = currentLoginGeneration();
+
+  // 同じログインの中で進行中なら何もしない（連打での二重登録を防ぐ）。
+  // 別のログインに変わっていれば、前の人の通信が続いていても受け付ける。
+  if (commonSourceRequestGeneration === generation) return;
+  commonSourceRequestGeneration = generation;
 
   setCommonSourceStatus("URLを登録中...", "loading");
   try {
@@ -186,8 +201,14 @@ async function registerCommonUrl() {
     if (!isSameLoginGeneration(generation)) return;
     setCommonSourceStatus(e.message, "error");
   } finally {
-    // 成功・失敗のどちらでも必ず解除する
-    commonSourceRequestInFlight = false;
+    // 成功・失敗のどちらでも必ず解放する。
+    //
+    // 自分が取った分だけ解放する理由:
+    //     無条件に null にすると、あとから始まった新しい世代の
+    //     登録まで「実行していない」ことにしてしまう。
+    if (commonSourceRequestGeneration === generation) {
+      commonSourceRequestGeneration = null;
+    }
   }
 }
 
