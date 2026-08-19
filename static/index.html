@@ -1073,8 +1073,20 @@ function showScreen(id) {
 //     前の人が選んだファイル名が画面に表示される。世代番号を進めておくと、
 //     応答を受け取った側が「別のログインに変わった」と判定して表示を止める。
 //     詳細は static/js/session.js を参照。
+//
+// トークンを削除する理由（Issue #107）:
+//     ログアウトしても localStorage にトークンが残ると、共用端末で次に使う人が
+//     DevTools から取り出して API を直接叩ける。JWT の有効期限は8時間
+//     （app/config.py の JWT_EXPIRE_HOURS）なので、その間ずっと有効なまま残る。
+//
+// サーバー側の無効化を行わない理由:
+//     JWT はステートレスなため無効化にはブラックリストが必要で、リクエストごとの
+//     照合コストが乗る。今回の論点は「端末にトークンを残さない」ことであり、
+//     クライアント側の削除で解決する。盗難後の対処は有効期限の設計の話として
+//     切り離す。
 function logout() {
   beginLoginGeneration();
+  localStorage.removeItem("token");
   showScreen('screen-login');
 }
 
