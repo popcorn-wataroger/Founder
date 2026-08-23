@@ -8,14 +8,22 @@
 """
 
 import logging
+import time
 from collections.abc import Iterator
 
 from google import genai
+from google.genai.errors import ServerError
 
 from app.config import GEMINI_API_KEY
 from app.vector_store import search
 
 logger = logging.getLogger(__name__)
+
+# Gemini APIが一時的なエラー（503 UNAVAILABLE等）を返したときのリトライ回数と待機秒数。
+# 待機秒数は試行のたびに倍にする（1回目→2秒、2回目→4秒、3回目→8秒）。
+# 高負荷が原因のエラーなので、間を置かず連打すると余計に混雑を悪化させるため。
+STREAM_RETRY_MAX_ATTEMPTS = 3
+STREAM_RETRY_BASE_SECONDS = 2
 
 # 回答の文章生成に使う Gemini のモデル名。
 # "gemini-flash-latest" は常に現行の flash モデルを指すエイリアスで、
@@ -291,14 +299,41 @@ def answer_question_stream(
 
     def generate_chunks() -> Iterator[str]:
         # Gemini のストリーミング生成。for で回すたびに、生成された断片が順に届く
-        for chunk in _client.models.generate_content_stream(
-            model=GENERATION_MODEL,
-            contents=prompt,
-        ):
-            # 断片には本文が入らないこともある（安全性の判定情報だけ等）ので、
-            # 中身がある断片だけを呼び出し元へ渡す
-            if chunk.text:
-                yield chunk.text
+        #
+        # リトライについて:
+        #   Gemini APIが混雑時に 503 UNAVAILABLE を返すことがある。一時的なエラーなので、
+        #   本文をまだ1つも送っていない場合に限りやり直す。
+        #   本文を送信済みの状態でやり直すと、呼び出し元（chat_router）が
+        #   途中まで送った断片の後ろにもう一度最初から回答をつなげてしまい、
+        #   ユーザーには「回答が二重に流れる」ように見えるため、その場合はリトライせず
+        #   従来どおり例外を外へ伝えてエラー扱いにする。
+        for attempt in range(1, STREAM_RETRY_MAX_ATTEMPTS + 1):
+            yielded_any = False
+            try:
+                for chunk in _client.models.generate_content_stream(
+                    model=GENERATION_MODEL,
+                    contents=prompt,
+                ):
+                    # 断片には本文が入らないこともある（安全性の判定情報だけ等）ので、
+                    # 中身がある断片だけを呼び出し元へ渡す
+                    if chunk.text:
+                        yielded_any = True
+                        yield chunk.text
+                return
+            except ServerError as e:
+                is_last_attempt = attempt == STREAM_RETRY_MAX_ATTEMPTS
+                if yielded_any or is_last_attempt:
+                    raise
+                wait_seconds = STREAM_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+                logger.warning(
+                    "Gemini APIが一時的なエラーを返したためリトライします "
+                    "(%d/%d回目、%d秒後に再試行): %s",
+                    attempt,
+                    STREAM_RETRY_MAX_ATTEMPTS,
+                    wait_seconds,
+                    e,
+                )
+                time.sleep(wait_seconds)
 
     # 5. 参照ソースIDは確定値として、本文は「これから少しずつ出てくる入れ物」として返す
     return referenced_sources, generate_chunks()
