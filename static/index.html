@@ -164,8 +164,17 @@ body {
 }
 .chat-header-info h2 { font-size: 15px; font-weight: 500; }
 .chat-header-info p { font-size: 11px; color: var(--teal); }
-.chat-header-logout {
+/* ヘッダー右側のボタンをまとめる入れ物。
+   .chat-header は .chat-header-info が余白を吸う作りのため、ボタンを直接置くと
+   ボタン同士の間隔が開いてしまう。まとめて右端へ寄せることで、
+   ボタンが増えても並びが崩れない */
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   margin-left: auto;
+}
+.chat-header-logout {
   font-size: 12px;
   color: var(--text-secondary);
   cursor: pointer;
@@ -769,7 +778,19 @@ body {
       <h2>Founder</h2>
       <p>オンライン</p>
     </div>
-    <div class="chat-header-logout" onclick="logout()">ログアウト</div>
+    <div class="chat-header-actions">
+      <!-- 共通ソース登録画面へ戻る導線（Issue #112）。
+           チャット画面は全ロールが共有するため、既定は非表示にしておき、
+           source_manager でログインしたときだけ JS 側で表示する。
+
+           表示の出し分けを誤っても権限の穴にはならない:
+           このボタンが行うのは #screen-source-manager へ移動することだけで、
+           その画面の操作（共通ソースの登録・一覧）は
+           すべてサーバー側の require_source_uploader が判定する。
+           画面が見えることと、操作できることは別に守られている。 -->
+      <div class="chat-header-logout" id="chat-back-to-source-manager" style="display:none;" onclick="backToSourceManager()">共通ソース登録</div>
+      <div class="chat-header-logout" onclick="logout()">ログアウト</div>
+    </div>
   </div>
   <div class="chat-messages" id="chat-messages">
     <!-- data-initial: 最初から置いてある吹き出しの目印。
@@ -814,6 +835,15 @@ body {
       <div class="sidebar-item active">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <span>共通ソース登録</span>
+      </div>
+      <!-- AIチャットへの導線（Issue #112）。
+           この画面の中にチャットUIを作らず、既存の #screen-chat へ移動させている。
+           理由: チャットUIをここにも置くと chat.js が使う #chat-messages と
+           #chat-input が画面内で重複し、どちらの要素を取るかが不定になる。
+           画面を移す形にすれば、chat.js を一切変更せずにそのまま使える。 -->
+      <div class="sidebar-item" onclick="openChatFromSourceManager()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></svg>
+        <span>AIチャット</span>
       </div>
     </nav>
     <div class="sidebar-bottom">
