@@ -44,6 +44,20 @@ async function handleLogin() {
   //     通信を始める。それらが控える世代番号は、新しい世代である必要がある。
   beginLoginGeneration();
 
+  // チャット画面にある「共通ソース登録へ戻る」ボタンの表示を、ロールで決め直す（Issue #112）。
+  //
+  // なぜログインのたびに決め直すか:
+  //     この表示状態は要素に残り続ける。決め直さないと、source_manager が
+  //     チャット画面を開いたあとにログアウトし、次に社員がログインしたとき、
+  //     前の人向けのボタンが残って見えてしまう。
+  //
+  // 押されても権限の穴にはならない:
+  //     このボタンが行うのは #screen-source-manager へ移動することだけで、
+  //     その画面の操作はすべてサーバー側の require_source_uploader が判定する。
+  //     それでも、そのロールに無関係な導線が見えるのは避ける。
+  document.getElementById("chat-back-to-source-manager").style.display =
+    data.role === "source_manager" ? "" : "none";
+
   // ロールごとに遷移先の画面を分ける。
   //
   // なぜ source_manager を管理者ホームへ通さないか（重要）:
