@@ -359,8 +359,7 @@ function initCommonSourceScreen() {
 //
 // 処理:
 //     1. チャット画面へ切り替える
-//     2. 戻るボタン（#chat-back-to-source-manager）を表示する
-//     3. これまでの会話を取り直す
+//     2. これまでの会話を取り直す
 //
 // なぜこの画面にチャットUIを作らず移動させるか:
 //     チャットUIをこちらにも置くと、chat.js が使う #chat-messages と #chat-input が
@@ -373,27 +372,19 @@ function initCommonSourceScreen() {
 //     （理由は chat.js の currentSessionId のコメントを参照）。
 function openChatFromSourceManager() {
   showScreen("screen-chat");
-  document.getElementById("chat-back-to-source-manager").style.display = "";
   restoreChatHistory();
 }
 
-// チャット画面から共通ソース登録画面へ戻る（Issue #112）
+// チャット画面から全社共通ソースの登録画面へ移動する（Issue #116）
 //
 // 入力: なし
 // 出力: なし（表示中の画面が #screen-source-manager に変わる）
-//
-// 戻るボタンを非表示に戻さない理由:
-//     source_manager でログインしている間は、2つの画面を何度も行き来する。
-//     戻るたびに消すと、次にチャット画面へ入るときにまた表示する処理が要る。
-//     このボタンはチャット画面の中にあり、他のロールのときは表示されないので、
-//     表示したままにしておいて問題ない。
-//     （表示状態は login.js のロール分岐が、ログインのたびに決め直している）
 //
 // 一覧を再取得しない理由:
 //     この画面を離れている間に共通ソースが増えることはない。
 //     登録は #screen-source-manager の中でしか行えず、
 //     登録した直後に uploadCommonSource() / registerCommonUrl() が
 //     loadCommonSources() を呼んで反映済みのため。
-function backToSourceManager() {
+function openChatCommonSourceScreen() {
   showScreen("screen-source-manager");
 }

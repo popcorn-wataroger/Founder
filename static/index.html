@@ -164,17 +164,8 @@ body {
 }
 .chat-header-info h2 { font-size: 15px; font-weight: 500; }
 .chat-header-info p { font-size: 11px; color: var(--teal); }
-/* ヘッダー右側のボタンをまとめる入れ物。
-   .chat-header は .chat-header-info が余白を吸う作りのため、ボタンを直接置くと
-   ボタン同士の間隔が開いてしまう。まとめて右端へ寄せることで、
-   ボタンが増えても並びが崩れない */
-.chat-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-left: auto;
-}
 .chat-header-logout {
+  margin-left: auto;
   font-size: 12px;
   color: var(--text-secondary);
   cursor: pointer;
@@ -778,19 +769,7 @@ body {
       <h2>Founder</h2>
       <p>オンライン</p>
     </div>
-    <div class="chat-header-actions">
-      <!-- 共通ソース登録画面へ戻る導線（Issue #112）。
-           チャット画面は全ロールが共有するため、既定は非表示にしておき、
-           source_manager でログインしたときだけ JS 側で表示する。
-
-           表示の出し分けを誤っても権限の穴にはならない:
-           このボタンが行うのは #screen-source-manager へ移動することだけで、
-           その画面の操作（共通ソースの登録・一覧）は
-           すべてサーバー側の require_source_uploader が判定する。
-           画面が見えることと、操作できることは別に守られている。 -->
-      <div class="chat-header-logout" id="chat-back-to-source-manager" style="display:none;" onclick="backToSourceManager()">共通ソース登録</div>
-      <div class="chat-header-logout" onclick="logout()">ログアウト</div>
-    </div>
+    <div class="chat-header-logout" onclick="logout()">ログアウト</div>
   </div>
   <div class="chat-messages" id="chat-messages">
     <!-- data-initial: 最初から置いてある吹き出しの目印。
@@ -805,7 +784,24 @@ body {
   <div class="chat-input-area" style="padding: 10px 20px; align-items: center;">
     <!-- 画面には出さず、ボタンからクリックだけをプログラムで発火させる -->
     <input type="file" id="my-source-file-input" accept=".pdf,.docx,.pptx,.txt" style="display:none" onchange="uploadMySource(this.files[0]);">
-    <button class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="openMySourcePicker();">＋ 資料を追加</button>
+    <button class="btn btn-outline" style="padding:6px 14px; font-size:12px;" onclick="openMySourcePicker();">＋ 自分の資料を追加</button>
+    <!-- 全社共通ソースの登録画面へ移動する導線（Issue #116）。
+         「自分の資料」と「全社共通の資料」は登録先も見える範囲も違うため、
+         2つの導線を隣に並べて違いが分かるようにしている。
+
+         このボタンは押しても、その場ではアップロードしない。
+         行うのは #screen-source-manager へ移動することだけ。
+         その場でアップロードさせない理由:
+         Issue #100 で共通ソースの登録画面を分離したことで
+         「個別ソースの登録UIが構造的に出ない」という保証を作ったが、
+         チャット画面に共通ソースの登録UIを持ち込むとその保証が崩れるため。
+
+         既定は非表示で、source_manager でログインしたときだけ JS 側が表示する。
+         表示の出し分けを誤っても権限の穴にはならない:
+         移動先の画面での操作（共通ソースの登録・一覧）は
+         すべてサーバー側の require_source_uploader が判定する。
+         画面が見えることと、操作できることは別に守られている。 -->
+    <button class="btn btn-outline" id="chat-add-common-source" style="display:none; padding:6px 14px; font-size:12px;" onclick="openChatCommonSourceScreen();">＋ 全社共通の資料を追加</button>
     <!-- 処理中・成功・エラーの表示（ソース管理画面と同じ source-status を流用） -->
     <div id="my-source-status" class="source-status" style="margin:0;"></div>
   </div>
