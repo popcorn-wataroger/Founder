@@ -190,9 +190,7 @@ def test_共通ソース管理者は管理者専用APIを叩けない(method: st
 
 
 @pytest.fixture
-def 外部への削除呼び出し(
-    monkeypatch: pytest.MonkeyPatch, temp_db: None
-) -> dict[str, list[str]]:
+def 外部への削除呼び出し(monkeypatch: pytest.MonkeyPatch, temp_db: None) -> dict[str, list[str]]:
     """Qdrantとストレージへの実通信を止め、「呼ばれたかどうか」だけを記録する。
 
     出力:
@@ -362,9 +360,7 @@ def test_社員はソースを削除できない() -> None:
     存在しない source_id を指定しても404ではなく403が返るのが正しい
     （権限判定がDBを引く前に終わっている＝ソースの有無を教えない）。
     """
-    response = TestClient(app).delete(
-        "/api/sources/99999", headers=_headers("1", ROLE_EMPLOYEE)
-    )
+    response = TestClient(app).delete("/api/sources/99999", headers=_headers("1", ROLE_EMPLOYEE))
 
     assert response.status_code == 403, response.text
     assert response.json()["detail"] == "共通ソースをアップロードする権限がありません"
