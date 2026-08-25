@@ -288,10 +288,17 @@ function setCommonSourceListMessage(message) {
 //     file_name は登録した人が付けたファイル名で、タグを含む名前もあり得る。
 //     textContent で入れることで、文字として表示される（XSSにならない）。
 //
-// 削除ボタンを付けない理由（Issue #101 の方針）:
-//     DELETE /api/sources/{source_id} は require_admin のまま。
-//     共通ソースは全社員の回答根拠になるため、誤削除の影響範囲が登録より広い。
-//     一覧が見えれば二重登録には気づけるので、削除権限の付与は別の判断として切り離す。
+// 削除ボタンを付ける理由（Issue #118）:
+//     Issue #101 の時点では削除ボタンを付けず、削除権限を与えるかどうかを
+//     別の判断として切り離していた（一覧が見えれば二重登録には気づけるため）。
+//     Issue #118 でクライアントと合意し、共通ソース管理者にも削除を許すことにした。
+//
+//     ただし削除できるのは共通ソース（scope='common'）だけで、
+//     他人の個別ソース（評価・給与など）には届かない。
+//     判定を持つのはサーバー側の delete_source() で、DBから取った行の scope を見て
+//     admin 以外が個別ソースを指定した場合は403を返す。
+//     この画面が扱うのは共通ソースだけ（GET /api/sources/common は
+//     scope='common' しか返さない）なので、一覧に出る行はすべて削除してよい対象になる。
 function buildCommonSourceItem(source) {
   const item = document.createElement("div");
   item.className = "source-item";
@@ -313,13 +320,70 @@ function buildCommonSourceItem(source) {
   date.className = "source-item-date";
   date.textContent = formatCommonSourceDate(source.uploaded_at);
 
+  // 削除ボタン。admin.js のソース一覧と同じ見た目（class="delete-btn" の「×」）にする
+  //
+  // onclick 属性ではなく addEventListener を使う理由:
+  //     admin.js は innerHTML でHTMLの文字列を組み立てているため onclick 属性しか選べない。
+  //     こちらは createElement で組み立てているので、source_id を文字列に埋め込まずに
+  //     そのまま渡せる。値がHTMLとして解釈される経路を作らない。
+  const deleteButton = document.createElement("button");
+  deleteButton.className = "delete-btn";
+  deleteButton.textContent = "×";
+  deleteButton.addEventListener("click", () => deleteCommonSource(source.source_id));
+
   texts.appendChild(name);
   texts.appendChild(date);
   info.appendChild(icon);
   info.appendChild(texts);
   item.appendChild(info);
+  item.appendChild(deleteButton);
 
   return item;
+}
+
+// 共通ソースを1件削除して、一覧を取り直す
+//
+// 入力: sourceId … 削除するソースのID（一覧の行が持っている source_id）
+// 処理:
+//     1. 確認ダイアログを出す。キャンセルなら何もしない
+//     2. DELETE /api/sources/{source_id} を叩く
+//     3. 成功したら一覧を再取得して、消えたことを画面に反映する
+// 出力: なし（#sm-status の表示と一覧の内容が変わる）
+//
+// エラーになる場面:
+//     403 … 個別ソースを指定した場合（この画面の一覧からは起こらないが、
+//            APIを直接叩かれた場合はサーバーが弾く）
+//     404 … 既に削除されている場合（他の管理者が先に消したときなど）
+//     500 … Qdrantや実体の削除に失敗した場合（このときソースは削除されない）
+//
+// admin.js の deleteSource() と別に持つ理由:
+//     処理はほぼ同じだが、あちらは管理者ホームのDOM（#source-status / #source-tbody）を
+//     前提にしており、setSourceStatus() と loadSources() を呼ぶ。
+//     この画面が扱うのは #sm-status と #sm-source-list なので、そのままでは使えない。
+//     また admin.js を呼ぶと依存が逆流する（source_manager 画面が管理者画面用の
+//     ファイルを必要とする）。formatCommonSourceDate と同じ判断で、こちらに持つ。
+//
+// 二重送信の世代チェック（commonSourceRequestGeneration）を使わない理由:
+//     あれは登録（POST）用の仕組み。非冪等な登録を2回処理すると、
+//     DBに2行・Qdrantに2組のベクトルができてしまうため入口で防いでいる。
+//     削除は冪等で、2回目は404が返るだけなので同じ重さの対策は要らない。
+async function deleteCommonSource(sourceId) {
+  if (!confirm("このソースを削除しますか？")) return;
+
+  setCommonSourceStatus("削除中...", "loading");
+  try {
+    const res = await fetch(`/api/sources/${sourceId}`, {
+      method: "DELETE",
+      headers: smAuthHeaders(),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "削除に失敗しました");
+
+    setCommonSourceStatus("ソースを削除しました", "success");
+    await loadCommonSources();
+  } catch (e) {
+    setCommonSourceStatus(e.message, "error");
+  }
 }
 
 // 登録日時を「2026/01/15 09:30」の形に整える

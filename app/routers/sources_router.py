@@ -989,14 +989,24 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
 
 
 @router.delete("/{source_id}")
-async def delete_source(source_id: int, token: dict = Depends(require_admin)):
+async def delete_source(source_id: int, token: dict = Depends(require_source_uploader)):
     """ソースを削除する（DB・実ファイル・Qdrantのベクトルをまとめて消す）。
+
+    誰が使えるか（権限ルール）:
+        入口の require_source_uploader で admin / source_manager に絞る。
+        そのうえで、
+        - admin（社長）… 共通ソースも個別ソースも削除できる
+        - source_manager（共通ソース管理者）… 共通ソース（scope='common'）だけ削除できる。
+          他人の個別ソース（評価・給与などの資料）には一切触れさせないため、
+          個別ソースを指定された場合は403で弾く。
+        社員（employee）は入口の require_source_uploader で403になる。
 
     処理:
         1. 対象のソースがあるか確認する（無ければ404）
-        2. Qdrantから、そのソース由来のチャンクを削除する
-        3. 保存した実体を削除する（URLの場合は実体が無いのでスキップ）
-        4. sources テーブルから削除する
+        2. scope による権限判定（source_manager は共通ソースのみ）
+        3. Qdrantから、そのソース由来のチャンクを削除する
+        4. 保存した実体を削除する（URLの場合は実体が無いのでスキップ）
+        5. sources テーブルから削除する
 
     なぜQdrantを先に消すのか:
         DBを先に消すと、途中で失敗したときに「DBには無いがQdrantには残る」状態になり、
@@ -1015,6 +1025,22 @@ async def delete_source(source_id: int, token: dict = Depends(require_admin)):
 
     if row is None:
         raise HTTPException(status_code=404, detail="ソースが見つかりません")
+
+    # Issue #118。共通ソース管理者（source_manager）は共通ソースだけ削除できる。
+    # 社長（admin）はこれまで通りすべて削除できる。
+    #
+    # なぜ source_id を受け取った時点で判定できないか:
+    #     受け取れるのは source_id だけで、その時点では共通ソースか個別ソースか分からない。
+    #     判定にはDBの scope が要る。404判定のために行は既に取得しているので、
+    #     その直後に scope を見るのが、余計な問い合わせを増やさない一番早い位置になる。
+    #
+    # なぜエンドポイントを分けないか:
+    #     この下の削除処理は Qdrant → 実体 → DB の順序と、その理由
+    #     （途中で失敗してもDBに行が残り、削除をやり直して復旧できるようにする）を
+    #     厳密に守る必要がある。同じ手順を2箇所に持つと、片方だけ直し忘れる事故が起きる。
+    #     そこで削除処理は1つのまま、判定だけを入口に置く形にした。
+    if token["role"] != ROLE_ADMIN and row["scope"] != "common":
+        raise HTTPException(status_code=403, detail="このソースを削除する権限がありません")
 
     # Qdrantから、このソース由来のチャンクをすべて削除する
     # （消し残すと、削除済みの資料をAIが回答の根拠にし続けてしまう）
