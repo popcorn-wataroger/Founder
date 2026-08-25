@@ -64,6 +64,20 @@ function smAuthHeaders(extra) {
 //     同じ世代の連打だけを弾ける。実行していないときは null。
 let commonSourceRequestGeneration = null;
 
+// 削除処理が進行中のソースID。連打で同じソースの削除が並行するのを防ぐ（Issue #118）
+//
+// なぜ登録用の commonSourceRequestGeneration と分けるか:
+//     あちらは「登録処理が1つでも走っているか」を持つ変数で、
+//     ファイル登録とURL登録のどちらか一方しか同時に動かせない。
+//     削除は一覧の行ごとに別のボタンがあり、違うソースを続けて消すのは正当な操作なので、
+//     まとめて1つの錠前にすると使い勝手が落ちる。
+//     防ぎたいのは「同じ source_id への二重送信」だけなので、IDごとに持つ。
+//
+// なぜ真偽値の変数ではなく Set か:
+//     同時に複数のソースが削除中になりうるため、実行中のIDを列挙して持つ必要がある。
+//     Set なら has / add / delete がそのまま「実行中か / 取る / 返す」に対応する。
+const deletingSourceIds = new Set();
+
 // 「+ アップロード」ボタンとアップロードゾーンのクリックから、隠しinputを開く
 function openCommonSourcePicker() {
   document.getElementById("sm-file-input").click();
@@ -363,12 +377,39 @@ function buildCommonSourceItem(source) {
 //     また admin.js を呼ぶと依存が逆流する（source_manager 画面が管理者画面用の
 //     ファイルを必要とする）。formatCommonSourceDate と同じ判断で、こちらに持つ。
 //
-// 二重送信の世代チェック（commonSourceRequestGeneration）を使わない理由:
-//     あれは登録（POST）用の仕組み。非冪等な登録を2回処理すると、
-//     DBに2行・Qdrantに2組のベクトルができてしまうため入口で防いでいる。
-//     削除は冪等で、2回目は404が返るだけなので同じ重さの対策は要らない。
+// 同じソースへの連打を deletingSourceIds で防ぐ理由（重要）:
+//     削除ボタンを連打すると、1回目の応答を待たずに2回目のリクエストが飛ぶ。
+//     サーバー側の delete_source() は「行を取得 → Qdrant削除 → 実体削除 → DB削除」の順で進むが、
+//     2回目が1回目の完了前に行の取得を済ませてしまうと、その時点ではまだ行が消えていないため
+//     404にならず、両方が削除処理へ進む。
+//     結果としてQdrantと実体の削除が二重に走り、2回目のストレージ削除が
+//     「もう無い」というエラーを返すと、実際には削除できているのに
+//     画面には「削除に失敗しました」と表示される。
+//
+//     「削除は冪等だから連打しても2回目は404が返るだけ」と考えるのは誤り。
+//     404で弾かれるのは1回目が完全に終わったあとに送った場合だけで、
+//     並行して走った場合は上記の通り両方が通ってしまう。
+//
+// 登録側の世代チェック（commonSourceRequestGeneration）を使わない理由:
+//     あれは「登録処理が1つでも走っているか」を持つ仕組みで、
+//     ファイル登録とURL登録が同じ #sm-status を奪い合うのを防ぐためのもの。
+//     削除は行ごとにボタンがあり、違うソースを続けて消すのは正当な操作なので、
+//     source_id ごとの実行中状態（deletingSourceIds）で防ぐ。
 async function deleteCommonSource(sourceId) {
+  // このソースの削除が既に進行中なら、2回目以降は捨てる
+  if (deletingSourceIds.has(sourceId)) return;
+
   if (!confirm("このソースを削除しますか？")) return;
+
+  // 実行中として登録するのは confirm より後。
+  //
+  // なぜ confirm より前に登録しないか:
+  //     confirm はユーザーが応答するまで戻ってこない。
+  //     先に登録してしまうと、キャンセルを押した場合に削除は始まっていないのに
+  //     登録だけが残り、以後そのソースは冒頭の has() で弾かれて二度と削除できなくなる。
+  //     （キャンセル時に消す処理を足す手もあるが、解放する場所が2箇所に増える。
+  //      「通信を始める直前に取り、finally で必ず返す」形にすれば取りこぼしが起きない）
+  deletingSourceIds.add(sourceId);
 
   setCommonSourceStatus("削除中...", "loading");
   try {
@@ -383,6 +424,12 @@ async function deleteCommonSource(sourceId) {
     await loadCommonSources();
   } catch (e) {
     setCommonSourceStatus(e.message, "error");
+  } finally {
+    // 成功・失敗のどちらでも必ず解放する。
+    // try の中で return や throw が起きても finally は実行されるため、
+    // 「実行中のまま二度と削除できない」状態にならない
+    // （uploadCommonSource() の finally と同じ考え方）。
+    deletingSourceIds.delete(sourceId);
   }
 }
 
