@@ -58,7 +58,7 @@ def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_db: None) -
     # role を入れているのは、ハンドラ内の check_scope_permission が token["role"] を見るため
     app.dependency_overrides[require_source_uploader] = lambda: {
         "user_id": "ADMIN",
-        "role": "admin",
+        "role": "ceo",
     }
 
     yield test_upload_dir

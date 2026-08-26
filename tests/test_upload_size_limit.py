@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from app import storage, upload_paths
 from app.main import app
 from app.routers import sources_router
-from app.routers.auth_router import ROLE_ADMIN, ROLE_EMPLOYEE, create_access_token
+from app.routers.auth_router import ROLE_CEO, ROLE_EMPLOYEE, create_access_token
 
 # users.csv 上の ADMIN（社長）と EMP001（社員）の user_id
 ADMIN_USER_ID = "1"
@@ -83,7 +83,7 @@ def _upload_common(content: bytes) -> httpx.Response:
         "/api/sources/upload",
         files={"file": ("就業規則.txt", content, "text/plain")},
         data={"scope": "common"},
-        headers=_headers(ADMIN_USER_ID, ROLE_ADMIN),
+        headers=_headers(ADMIN_USER_ID, ROLE_CEO),
     )
 
 

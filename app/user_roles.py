@@ -73,7 +73,7 @@ def set_role(user_id: str, role: str, updated_by: str) -> None:
 
     入力:
         user_id    … ロールを変える対象の社員の user_id
-        role       … 記録するロール名（employee / source_manager / admin）
+        role       … 記録するロール名（employee / source_manager / ceo）
         updated_by … 変更した人の user_id（誰が変えたかを残すため）
 
     処理:

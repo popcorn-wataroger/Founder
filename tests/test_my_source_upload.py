@@ -31,7 +31,7 @@ from qdrant_client.models import FieldCondition, Filter
 from app import database, storage, upload_paths, vector_store
 from app.main import app
 from app.routers import sources_router
-from app.routers.auth_router import ROLE_ADMIN, ROLE_EMPLOYEE, create_access_token
+from app.routers.auth_router import ROLE_CEO, ROLE_EMPLOYEE, create_access_token
 
 # users.csv 上の EMP001（社員）と EMP002（他人）の user_id
 EMPLOYEE_USER_ID = "2"
@@ -181,7 +181,7 @@ def test_社長がtarget_user_idを指定した場合は従来どおり(monkeypa
     """社員データ画面からの問い合わせ（共通 ＋ 対象社員の個別）が壊れていないこと。"""
     captured = _capture_query_filter(monkeypatch)
 
-    vector_store.search("この社員について", role=ROLE_ADMIN, target_user_id=OTHER_USER_ID)
+    vector_store.search("この社員について", role=ROLE_CEO, target_user_id=OTHER_USER_ID)
 
     conditions = _collect_conditions(captured["query_filter"])
 

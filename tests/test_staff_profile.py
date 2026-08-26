@@ -149,7 +149,7 @@ def test_関連文書が0件でも基本情報があれば生成する(monkeypat
 
     referenced_sources, chunks = rag.answer_question_stream(
         "家族構成は？",
-        role="admin",
+        role="ceo",
         target_user_id="2",
         profile="氏名: 奥村仁哉\n家族構成: 配偶者・子1",
     )

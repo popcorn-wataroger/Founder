@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from app import database
 from app.main import app
 from app.routers.auth_router import (
-    ROLE_ADMIN,
+    ROLE_CEO,
     ROLE_EMPLOYEE,
     ROLE_SOURCE_MANAGER,
     create_access_token,
@@ -66,11 +66,11 @@ def _insert_mixed_sources() -> None:
     _insert_source("EMP002_給与明細.txt", "individual", "3", "2026-01-04T00:00:00")
 
 
-@pytest.mark.parametrize("role", [ROLE_ADMIN, ROLE_SOURCE_MANAGER])
+@pytest.mark.parametrize("role", [ROLE_CEO, ROLE_SOURCE_MANAGER])
 def test_共通ソースだけが登録日の新しい順で返る(
     client: TestClient, temp_db: None, role: str
 ) -> None:
-    """admin と source_manager のどちらでも、返るのは共通ソースだけ。"""
+    """ceo と source_manager のどちらでも、返るのは共通ソースだけ。"""
     _insert_mixed_sources()
 
     response = client.get("/api/sources/common", headers=_headers("8", role))
@@ -149,7 +149,7 @@ def test_未ログインでは共通ソース一覧を取得できない(client:
 
 
 def test_既存の全ソース一覧は共通ソース管理者には返らない(client: TestClient) -> None:
-    """GET /api/sources は require_admin のまま（今回のIssueで緩めていない）。
+    """GET /api/sources は require_ceo のまま（今回のIssueで緩めていない）。
 
     ここが403のままであることが、個別ソースのファイル名と file_path を
     source_manager に見せない根拠になる。
@@ -164,7 +164,7 @@ def test_管理者は従来どおり全ソースを取得できる(client: TestC
     """GET /api/sources の挙動が変わっていないこと（共通・個別の両方が返る）。"""
     _insert_mixed_sources()
 
-    response = client.get("/api/sources", headers=_headers("1", ROLE_ADMIN))
+    response = client.get("/api/sources", headers=_headers("1", ROLE_CEO))
 
     assert response.status_code == 200, response.text
     assert len(response.json()) == 4

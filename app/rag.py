@@ -130,7 +130,7 @@ def answer_question(
 
     入力:
         question     … ユーザーからの質問テキスト
-        role         … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
+        role         … 質問した人の役割（'ceo' か 'employee'）。検索範囲の権限判定に使う
         self_user_id … 質問した本人の user_id。
                        社員が「自分の個別ソース」も検索対象に含めるために使う。
                        省略時（None）は共通ソースのみ（従来どおり）。
@@ -158,7 +158,7 @@ def answer_question(
 
     target_user_id との違い（answer_question_stream を参照）:
         target_user_id は社長が画面で選んだ「相手」を指す値で、
-        require_admin で守られた経路（社員データ画面）からのみ渡る。
+        require_ceo で守られた経路（社員データ画面）からのみ渡る。
         self_user_id が指すのは常に本人自身で、社員の経路からも渡る。
         指し示す相手が違うので、引数も分けている。
     """
@@ -213,7 +213,7 @@ def answer_question_stream(
 
     入力:
         question       … ユーザーからの質問テキスト
-        role           … 質問した人の役割（'admin' か 'employee'）。検索範囲の権限判定に使う
+        role           … 質問した人の役割（'ceo' か 'employee'）。検索範囲の権限判定に使う
         target_user_id … 社員データ画面から「この社員について」質問する場合の対象社員の user_id。
                          省略時（None）は従来どおり、role だけで検索範囲が決まる
         profile        … 対象社員の基本情報（app.users.format_user_profile が作った文字列）。
@@ -228,7 +228,7 @@ def answer_question_stream(
 
                          target_user_id との違い:
                          target_user_id は社長が画面で選んだ「相手」を指す値で、
-                         require_admin で守られた経路からのみ渡る。
+                         require_ceo で守られた経路からのみ渡る。
                          self_user_id が指すのは常に本人自身で、社員の経路からも渡る。
                          指し示す相手が違うので、引数も分けている。
 

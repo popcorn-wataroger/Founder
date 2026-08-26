@@ -15,7 +15,7 @@ DBを使う理由:
     DBに触るテストには temp_db フィクスチャを付けている。
 
 users.csv 上の前提:
-    user_id=1 … ADMIN（admin）
+    user_id=1 … ADMIN（ceo）
     user_id=2 … EMP001（employee）
     user_id=8 … EMP007（source_manager）
 """
@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from app import config, database
 from app.main import app
 from app.routers.auth_router import (
-    ROLE_ADMIN,
+    ROLE_CEO,
     ROLE_EMPLOYEE,
     ROLE_SOURCE_MANAGER,
     create_access_token,
@@ -129,7 +129,7 @@ def test_管理者は社員のロールを変更できる(temp_db: None) -> None
         TestClient(app),
         EMPLOYEE_USER_ID,
         ROLE_SOURCE_MANAGER,
-        _headers(ADMIN_USER_ID, ROLE_ADMIN),
+        _headers(ADMIN_USER_ID, ROLE_CEO),
     )
 
     assert response.status_code == 200, response.text
@@ -155,7 +155,7 @@ def test_知らないロール名は400(temp_db: None) -> None:
     ログインすることになる。
     """
     response = _update_role(
-        TestClient(app), EMPLOYEE_USER_ID, "manager", _headers(ADMIN_USER_ID, ROLE_ADMIN)
+        TestClient(app), EMPLOYEE_USER_ID, "manager", _headers(ADMIN_USER_ID, ROLE_CEO)
     )
 
     assert response.status_code == 400, response.text
@@ -167,24 +167,24 @@ def test_知らないロール名は400(temp_db: None) -> None:
 def test_存在しない社員は404(temp_db: None) -> None:
     """実在しない user_id を指定しても、user_roles に幽霊の行が増えない。"""
     response = _update_role(
-        TestClient(app), "99999", ROLE_SOURCE_MANAGER, _headers(ADMIN_USER_ID, ROLE_ADMIN)
+        TestClient(app), "99999", ROLE_SOURCE_MANAGER, _headers(ADMIN_USER_ID, ROLE_CEO)
     )
 
     assert response.status_code == 404, response.text
     assert _fetch_role_rows("99999") == []
 
 
-@pytest.mark.parametrize("変更後のロール", [ROLE_EMPLOYEE, ROLE_ADMIN])
+@pytest.mark.parametrize("変更後のロール", [ROLE_EMPLOYEE, ROLE_CEO])
 def test_自分自身のロールは変更できない(変更後のロール: str, temp_db: None) -> None:
-    """社長が自分を対象にすると403。変更先が admin であっても一律で拒否する。
+    """社長が自分を対象にすると403。変更先が ceo であっても一律で拒否する。
 
     最後の管理者が自分を employee に落とすと、誰もこのAPIを叩けなくなり、
     ロールを戻す手段がDBの直接操作しか無くなる（管理者ゼロの事故）。
-    「admin → admin なら実質何も変わらないので許す」といった例外を作らないのは、
+    「ceo → ceo なら実質何も変わらないので許す」といった例外を作らないのは、
     条件が増えるほど事故を防げているかの確認が難しくなるため。
     """
     response = _update_role(
-        TestClient(app), ADMIN_USER_ID, 変更後のロール, _headers(ADMIN_USER_ID, ROLE_ADMIN)
+        TestClient(app), ADMIN_USER_ID, 変更後のロール, _headers(ADMIN_USER_ID, ROLE_CEO)
     )
 
     assert response.status_code == 403, response.text
@@ -193,12 +193,12 @@ def test_自分自身のロールは変更できない(変更後のロール: st
 
 @pytest.mark.parametrize("role", [ROLE_EMPLOYEE, ROLE_SOURCE_MANAGER])
 def test_管理者以外はロールを変更できない(role: str, temp_db: None) -> None:
-    """社員も source_manager も403（require_admin が効いている）。
+    """社員も source_manager も403（require_ceo が効いている）。
 
     ロールの付け替えは「誰が何を見られるか」を決める操作なので、
     共通ソースを登録できるだけの source_manager にも許さない。
     """
-    response = _update_role(TestClient(app), EMPLOYEE_USER_ID, ROLE_ADMIN, _headers("8", role))
+    response = _update_role(TestClient(app), EMPLOYEE_USER_ID, ROLE_CEO, _headers("8", role))
 
     assert response.status_code == 403, response.text
     assert response.json()["detail"] == "管理者のみ操作できます"

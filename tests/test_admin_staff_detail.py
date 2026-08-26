@@ -7,7 +7,7 @@
 何を守りたいか:
     1. パスワードなど、画面に不要な項目がレスポンスに混ざらないこと
        （role は画面でロールを表示・変更するために必要なので返す。
-         このAPIは require_admin の社長専用で、社員には届かない）
+         このAPIは require_ceo の社長専用で、社員には届かない）
     2. 他人の個別ソースや全社共通ソースが、その社員の欄に出てこないこと
     3. 社員（employee）がこれらのURLを叩いても拒否されること
 """
@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from app import database
 from app.main import app
-from app.routers.auth_router import create_access_token, require_admin
+from app.routers.auth_router import create_access_token, require_ceo
 from app.user_roles import set_role
 
 
@@ -27,10 +27,10 @@ from app.user_roles import set_role
 def client() -> Iterator[TestClient]:
     """管理者としてログイン済みの状態でAPIを叩けるクライアント。
 
-    認証そのものはここでの検証対象ではないので、require_admin を差し替えて通す。
-    （権限チェックが効いているかは admin_required のテストで別途確認する）
+    認証そのものはここでの検証対象ではないので、require_ceo を差し替えて通す。
+    （権限チェックが効いているかは require_ceo のテストで別途確認する）
     """
-    app.dependency_overrides[require_admin] = lambda: {"user_id": "1", "role": "admin"}
+    app.dependency_overrides[require_ceo] = lambda: {"user_id": "1", "role": "ceo"}
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -86,7 +86,7 @@ def test_パスワードは返さない(client: TestClient, temp_db: None) -> No
         role は社員データ画面でその社員のロールを表示し、変更する
         （PUT /api/admin/users/{user_id}/role）ために必要な値で、
         現在のロールが分からないと画面は変更後の値を選ばせようがない。
-        このAPIは require_admin を付けた社長専用なので、
+        このAPIは require_ceo を付けた社長専用なので、
         社員が他人のロールを知る経路にはならない。
     """
     response = client.get("/api/admin/users/2")
@@ -120,7 +120,7 @@ def test_存在しないuser_idは404(client: TestClient) -> None:
 
 
 def test_管理者本人のuser_idは404(client: TestClient) -> None:
-    """スタッフ一覧が admin を除外しているので、詳細も見られない扱いに揃える。"""
+    """スタッフ一覧が ceo を除外しているので、詳細も見られない扱いに揃える。"""
     response = client.get("/api/admin/users/1")
     assert response.status_code == 404
 
@@ -159,7 +159,7 @@ def test_個別ソースが0件でも空リストを返す(client: TestClient, t
 
 @pytest.mark.parametrize("path", ["/api/admin/users/2", "/api/admin/users/2/sources"])
 def test_社員は403で拒否される(path: str) -> None:
-    """社員のトークンでは、どちらのURLも叩けない（require_admin が効いている）。"""
+    """社員のトークンでは、どちらのURLも叩けない（require_ceo が効いている）。"""
     token = create_access_token(user_id="2", role="employee")
     response = TestClient(app).get(path, headers={"Authorization": f"Bearer {token}"})
 

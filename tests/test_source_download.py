@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 
 from app import database, storage, upload_paths
 from app.main import app
-from app.routers.auth_router import require_admin, verify_token
+from app.routers.auth_router import require_ceo, verify_token
 from app.routers.sources_router import _safe_download_name, build_content_disposition
 
 
@@ -57,7 +57,7 @@ def upload_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, temp_db: None) -
     monkeypatch.setattr(storage, "APP_ENV", "test")
 
     # 管理者チェックを通す（権限そのものを見るテストでは、この上書きを個別に外す）
-    app.dependency_overrides[require_admin] = lambda: {"user_id": "ADMIN"}
+    app.dependency_overrides[require_ceo] = lambda: {"user_id": "ADMIN"}
 
     yield test_upload_dir
 
@@ -129,12 +129,12 @@ def test_正常系_実ファイルが元のファイル名でダウンロード�
 
 
 def test_社員はダウンロードできない(client: TestClient, upload_dir: Path) -> None:
-    """require_admin が効いていること。社員トークンでは403になる。"""
+    """require_ceo が効いていること。社員トークンでは403になる。"""
     file_path = _put_file(upload_dir)
     source_id = _insert_source("給与明細.txt", "txt", file_path)
 
     # 管理者素通りの上書きを外し、代わりに「社員としてログイン済み」を差し込む
-    app.dependency_overrides.pop(require_admin, None)
+    app.dependency_overrides.pop(require_ceo, None)
     app.dependency_overrides[verify_token] = lambda: {"user_id": "EMP001", "role": "employee"}
 
     response = client.get(f"/api/sources/{source_id}/download")

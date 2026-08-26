@@ -154,7 +154,7 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> FakeQdrantClient:
 
 def test_対象社員を指定すると共通と本人の個別だけが返る(fake_client: FakeQdrantClient) -> None:
     """他の社員の個別ソースが検索結果に混ざらないことを固定する（Issue #24 の核心）。"""
-    results = vector_store.search("評価は？", role="admin", target_user_id="2", top_k=10)
+    results = vector_store.search("評価は？", role="ceo", target_user_id="2", top_k=10)
 
     source_ids = [r["source_id"] for r in results]
 
@@ -169,7 +169,7 @@ def test_対象社員のフィルタは共通または本人の個別というOR
     fake_client: FakeQdrantClient,
 ) -> None:
     """組み立てたフィルタの形そのものを固定する（should=OR / must=AND の取り違え防止）。"""
-    vector_store.search("評価は？", role="admin", target_user_id="2")
+    vector_store.search("評価は？", role="ceo", target_user_id="2")
 
     query_filter = fake_client.last_query_filter
     assert isinstance(query_filter, Filter)
@@ -210,7 +210,7 @@ def test_社員の通常検索は共通ソースだけ(fake_client: FakeQdrantCl
 
 def test_社長の通常検索は絞り込みなし(fake_client: FakeQdrantClient) -> None:
     """既存の社長チャットの挙動（全ソースが対象）が変わっていないことを固定する。"""
-    results = vector_store.search("評価は？", role="admin", top_k=10)
+    results = vector_store.search("評価は？", role="ceo", top_k=10)
 
     assert sorted(r["source_id"] for r in results) == ["10", "20", "30"]
     assert fake_client.last_query_filter is None

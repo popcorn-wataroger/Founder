@@ -471,7 +471,7 @@ function renderStaffProfile(user) {
 /**
  * 権限（ロール）の欄を、その社員の現在の値に合わせる。
  *
- * 入力: role … APIが返した実効ロール（employee / source_manager / admin）
+ * 入力: role … APIが返した実効ロール（employee / source_manager / ceo）
  * 出力: なし（select と保存ボタン、状態表示を書き換える）
  *
  * 別の社員を開いたときに前の状態が残らないよう、ここで毎回
@@ -484,14 +484,14 @@ function renderStaffProfile(user) {
  *
  * このUIを社員に出し分けない理由:
  *   社員データ画面（管理者ホーム）自体が社長専用で、
- *   ここに到達できる時点で admin であることは既に保証されている
- *   （画面遷移はログイン時のロールで決まり、APIはすべて require_admin）。
+ *   ここに到達できる時点で ceo であることは既に保証されている
+ *   （画面遷移はログイン時のロールで決まり、APIはすべて require_ceo）。
  *   出し分けを足すと同じ判定が画面側にも増え、どちらが本当の制限か分かりにくくなる。
  *   権限の判定はサーバー側の1箇所に置いたままにする。
  */
 function renderStaffRole(role) {
   const select = document.getElementById("detail-role-select");
-  const known = ["employee", "source_manager", "admin"].includes(role);
+  const known = ["employee", "source_manager", "ceo"].includes(role);
 
   currentStaffRole = known ? role : "employee";
   select.value = currentStaffRole;

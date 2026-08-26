@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from app import safe_urls
 from app.main import app
 from app.routers import sources_router
-from app.routers.auth_router import ROLE_ADMIN, create_access_token
+from app.routers.auth_router import ROLE_CEO, create_access_token
 
 # 管理者としてログイン済みとみなすときの user_id（users.csv の ADMIN）
 ADMIN_USER_ID = "1"
@@ -66,7 +66,7 @@ def _register_url(url: str) -> httpx.Response:
     return TestClient(app).post(
         "/api/sources/url",
         json={"url": url, "scope": "common"},
-        headers=_headers(ADMIN_USER_ID, ROLE_ADMIN),
+        headers=_headers(ADMIN_USER_ID, ROLE_CEO),
     )
 
 

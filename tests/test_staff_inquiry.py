@@ -72,9 +72,9 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> RecordedCall:
     return call
 
 
-def _admin_headers() -> dict[str, str]:
+def _ceo_headers() -> dict[str, str]:
     """社長としてログイン済みの状態を表す認証ヘッダを作る。"""
-    token = create_access_token(user_id=ADMIN_USER_ID, role="admin")
+    token = create_access_token(user_id=ADMIN_USER_ID, role="ceo")
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -85,7 +85,7 @@ def _employee_headers() -> dict[str, str]:
 
 
 def test_社員のトークンでは403(temp_db: None) -> None:
-    """管理者ロールのみ利用可能（require_admin が効いている）。"""
+    """管理者ロールのみ利用可能（require_ceo が効いている）。"""
     token = create_access_token(user_id=STAFF_USER_ID, role="employee")
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
@@ -115,12 +115,12 @@ def test_対象社員が検索まで渡る(temp_db: None, recorded: RecordedCall
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "  直近の評価は？  ", "target_user_id": STAFF_USER_ID},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 200
     assert recorded.target_user_id == STAFF_USER_ID
-    assert recorded.role == "admin"
+    assert recorded.role == "ceo"
     # 前後の空白は取り除かれてから渡る
     assert recorded.question == "直近の評価は？"
 
@@ -134,7 +134,7 @@ def test_対象社員の基本情報がプロンプトに渡る(temp_db: None, r
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "家族構成は？", "target_user_id": STAFF_USER_ID},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 200
@@ -153,7 +153,7 @@ def test_基本情報にパスワードとロールが含まれない(temp_db: N
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "この人について教えて", "target_user_id": STAFF_USER_ID},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 200
@@ -171,7 +171,7 @@ def test_通常チャットには基本情報を渡さない(temp_db: None, reco
     response = TestClient(app).post(
         "/api/chat/stream",
         json={"question": "有給は何日？"},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 200
@@ -184,7 +184,7 @@ def test_SSEでsourcesとtokenとdoneが順に流れる(temp_db: None, recorded:
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "評価は？", "target_user_id": STAFF_USER_ID},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 200
@@ -213,7 +213,7 @@ def test_セッションは社長のものとして記録される(temp_db: None
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "評価は？", "target_user_id": STAFF_USER_ID},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
     assert response.status_code == 200
 
@@ -240,7 +240,7 @@ def test_存在しない社員は404(temp_db: None, recorded: RecordedCall) -> N
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "評価は？", "target_user_id": "99999"},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 404
@@ -253,7 +253,7 @@ def test_管理者自身のuser_idは404(temp_db: None, recorded: RecordedCall) 
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "評価は？", "target_user_id": ADMIN_USER_ID},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 404
@@ -265,7 +265,7 @@ def test_空の質問は400(temp_db: None, recorded: RecordedCall) -> None:
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "   ", "target_user_id": STAFF_USER_ID},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 400
@@ -284,7 +284,7 @@ def test_他人のセッションには書き込めない(temp_db: None, recorde
             "target_user_id": STAFF_USER_ID,
             "session_id": other_session_id,
         },
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 403
@@ -306,7 +306,7 @@ def test_通常チャットのセッションを指定すると400(temp_db: None
             "target_user_id": STAFF_USER_ID,
             "session_id": general_session_id,
         },
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 400
@@ -325,7 +325,7 @@ def test_社員別チャットのセッションは続けられる(temp_db: None
             "target_user_id": STAFF_USER_ID,
             "session_id": session_id,
         },
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
     assert response.status_code == 200
 
@@ -348,7 +348,7 @@ def test_社員別チャットのセッションを通常チャットに指定�
     response = TestClient(app).post(
         "/api/chat/stream",
         json={"question": "有給は何日？", "session_id": staff_session_id},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 400
@@ -383,7 +383,7 @@ def test_社員別チャットではself_user_idを渡さない(temp_db: None, r
     """/api/chat/staff-inquiry では self_user_id を渡さないことを固定する。
 
     なぜこのテストが必要か:
-        この経路は require_admin で守られており role='admin' になる。
+        この経路は require_ceo で守られており role='ceo' になる。
         search() の社員向けの分岐に入らないので、self_user_id を渡す意味がない。
         意味の無い値を渡さないでおけば、「誰の資料を見てよいか」を決める材料が
         target_user_id ひとつに保たれ、後から読んだときに経路を追いやすい。
@@ -391,7 +391,7 @@ def test_社員別チャットではself_user_idを渡さない(temp_db: None, r
     response = TestClient(app).post(
         "/api/chat/staff-inquiry",
         json={"question": "評価は？", "target_user_id": STAFF_USER_ID},
-        headers=_admin_headers(),
+        headers=_ceo_headers(),
     )
 
     assert response.status_code == 200

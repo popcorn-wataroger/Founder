@@ -18,15 +18,15 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 # ロールを表す定数。
-# 文字列を直接書くとタイプミスに気づけない（"admin" と "Admin" の違いなど）ため、
+# 文字列を直接書くとタイプミスに気づけない（"ceo" と "Ceo" の違いなど）ため、
 # ロール名はここに集約して、判定側はこの定数を参照する。
-ROLE_ADMIN = "admin"
+ROLE_CEO = "ceo"
 ROLE_SOURCE_MANAGER = "source_manager"
 ROLE_EMPLOYEE = "employee"
 
 # 受け付けてよいロール名の全体。ロールを増やすときはここに足せば、
 # 検証している側（ロール変更API）は触らずに済む
-VALID_ROLES = frozenset({ROLE_ADMIN, ROLE_SOURCE_MANAGER, ROLE_EMPLOYEE})
+VALID_ROLES = frozenset({ROLE_CEO, ROLE_SOURCE_MANAGER, ROLE_EMPLOYEE})
 
 
 def create_access_token(user_id: str, role: str) -> str:
@@ -57,22 +57,22 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
         raise HTTPException(status_code=401, detail="無効なトークンです")
 
 
-def require_admin(token: dict = Depends(verify_token)) -> dict:
-    """管理者（社長）以外は403を返す。
+def require_ceo(token: dict = Depends(verify_token)) -> dict:
+    """社長以外は403を返す。
 
     入力:
         token … verify_token が検証したJWTの中身（user_id / role を含む）
 
     出力:
-        管理者なら token をそのまま返す。管理者でなければ 403 を投げる。
+        社長なら token をそのまま返す。社長でなければ 403 を投げる。
 
     使いどころ:
         ソースのアップロード・削除、他人のチャットログ閲覧など、
-        社長だけに許す操作のエンドポイントに Depends(require_admin) を付ける。
-        認証（verify_token）と権限（require_admin）をこのファイルにまとめておくことで、
+        社長だけに許す操作のエンドポイントに Depends(require_ceo) を付ける。
+        認証（verify_token）と権限（require_ceo）をこのファイルにまとめておくことで、
         どのルーターからも同じ判定を使い回せる。
     """
-    if token.get("role") != ROLE_ADMIN:
+    if token.get("role") != ROLE_CEO:
         raise HTTPException(status_code=403, detail="管理者のみ操作できます")
     return token
 
@@ -81,17 +81,17 @@ def can_upload_common_source(role: str) -> bool:
     """全社共通ソースをアップロードできる役割かどうかを判定する。
 
     入力:
-        role … ロール名の文字列（例: "admin" / "source_manager" / "employee"）。
+        role … ロール名の文字列（例: "ceo" / "source_manager" / "employee"）。
                 JWTの role や users.csv の role をそのまま渡す想定。
 
     処理:
-        role が ROLE_ADMIN か ROLE_SOURCE_MANAGER のいずれかに一致するかを調べる。
+        role が ROLE_CEO か ROLE_SOURCE_MANAGER のいずれかに一致するかを調べる。
         一致しないもの（未知のロール名や空文字を含む）はすべて許可しない側に倒す。
 
     出力:
         アップロードを許可してよいなら True、それ以外は False。
     """
-    return role in (ROLE_ADMIN, ROLE_SOURCE_MANAGER)
+    return role in (ROLE_CEO, ROLE_SOURCE_MANAGER)
 
 
 def require_source_uploader(token: dict = Depends(verify_token)) -> dict:
@@ -138,7 +138,7 @@ async def login(req: LoginRequest):
     出力:
         いずれの場合もHTTPステータスは200で、辞書の success で成否を表す。
 
-        成功時: {"success": True, "role": 実効ロール（employee/source_manager/admin）,
+        成功時: {"success": True, "role": 実効ロール（employee/source_manager/ceo）,
                  "name": 氏名, "token": JWTアクセストークン}
         失敗時: {"success": False, "message": 画面に出すエラーメッセージ}
 
