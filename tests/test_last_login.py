@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 
 from app import database, user_logins
 from app.main import app
-from app.routers.auth_router import require_admin
+from app.routers.auth_router import require_ceo
 from app.users import USERS_CSV_PATH
 
 
@@ -33,9 +33,9 @@ def client(temp_db: None) -> Iterator[TestClient]:
     """管理者としてログイン済みの状態でAPIを叩けるクライアント。
 
     ログインAPI（POST /api/login）は認証不要なので、この差し替えの影響を受けない。
-    差し替えているのは社員データ画面API（require_admin）の方だけ。
+    差し替えているのは社員データ画面API（require_ceo）の方だけ。
     """
-    app.dependency_overrides[require_admin] = lambda: {"user_id": "1", "role": "admin"}
+    app.dependency_overrides[require_ceo] = lambda: {"user_id": "1", "role": "ceo"}
     yield TestClient(app)
     app.dependency_overrides.clear()
 

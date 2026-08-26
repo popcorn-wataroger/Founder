@@ -14,8 +14,8 @@ from pydantic import BaseModel
 from app import storage
 from app.database import get_connection
 from app.routers.auth_router import (
-    ROLE_ADMIN,
-    require_admin,
+    ROLE_CEO,
+    require_ceo,
     require_source_uploader,
     verify_token,
 )
@@ -57,7 +57,7 @@ _CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 
 
 @router.get("")
-async def list_sources(token: dict = Depends(require_admin)):
+async def list_sources(token: dict = Depends(require_ceo)):
     """ソース一覧を返す"""
     with closing(get_connection()) as conn:
         rows = conn.execute("SELECT * FROM sources ORDER BY uploaded_at DESC").fetchall()
@@ -72,7 +72,7 @@ async def list_common_sources(
 
     入力:
         token … require_source_uploader が返すログイン情報
-                （admin か source_manager でなければ403で弾かれている）
+                （ceo か source_manager でなければ403で弾かれている）
 
     出力:
         共通ソースの一覧（登録日の新しい順）。
@@ -112,13 +112,13 @@ async def list_common_sources(
 
 @admin_router.get("/users/{user_id}/sources")
 async def list_user_sources(
-    user_id: str, token: dict = Depends(require_admin)
+    user_id: str, token: dict = Depends(require_ceo)
 ) -> list[dict[str, Any]]:
     """指定した社員の「個別ソース」だけを一覧で返す（社長専用）。
 
     入力:
         user_id … ソースを見たい社員の user_id（URLパスで指定）
-        token   … require_admin が返すログイン情報（社長でなければ403で弾かれている）
+        token   … require_ceo が返すログイン情報（社長でなければ403で弾かれている）
 
     出力:
         その社員の個別ソースの一覧（登録日の新しい順）。
@@ -173,10 +173,10 @@ def check_scope_permission(role: str, scope: str) -> None:
         scope … 登録しようとしているソース種別（'common' か 'individual'）
 
     処理:
-        scope が 'individual' のときだけ、role が ROLE_ADMIN かどうかを見る。
+        scope が 'individual' のときだけ、role が ROLE_CEO かどうかを見る。
         個別ソースは特定の社員に紐づく資料（評価・給与など）なので、社長だけに許す。
         scope が 'common' のときは何もしない。
-        入口の require_source_uploader で admin / source_manager に絞り込み済みで、
+        入口の require_source_uploader で ceo / source_manager に絞り込み済みで、
         そのどちらも共通ソースを登録してよいため、ここで重ねて弾く必要がない。
 
     出力:
@@ -199,7 +199,7 @@ def check_scope_permission(role: str, scope: str) -> None:
         まだ読み取っていない。そのため scope を使う判定は、
         値が揃ったあとのハンドラ内部で呼ぶ必要がある。
     """
-    if scope == "individual" and role != ROLE_ADMIN:
+    if scope == "individual" and role != ROLE_CEO:
         raise HTTPException(status_code=403, detail="個別ソースを登録できるのは管理者のみです")
 
 
@@ -429,9 +429,9 @@ async def upload_source(
     """ファイルをアップロードしてソースとして登録し、AIが検索できるようベクトル化する。
 
     誰が使えるか（権限ルール）:
-        入口の require_source_uploader で admin / source_manager に絞る。
+        入口の require_source_uploader で ceo / source_manager に絞る。
         そのうえで、個別ソース（scope='individual'）の登録は
-        check_scope_permission が admin だけに限定する。
+        check_scope_permission が ceo だけに限定する。
         つまり source_manager は共通ソースだけを登録できる。
 
     処理:
@@ -723,8 +723,8 @@ async def register_url(req: UrlRequest, token: dict = Depends(require_source_upl
 
     誰が使えるか（権限ルール）:
         upload_source と同じ。入口の require_source_uploader で
-        admin / source_manager に絞り、個別ソースの登録は
-        check_scope_permission が admin だけに限定する。
+        ceo / source_manager に絞り、個別ソースの登録は
+        check_scope_permission が ceo だけに限定する。
 
     処理:
         1. 入力チェック（scope）と scope の権限判定
@@ -898,18 +898,18 @@ def build_content_disposition(filename: str) -> str:
 
 
 @router.get("/{source_id}/download")
-async def download_source(source_id: int, token: dict = Depends(require_admin)):
+async def download_source(source_id: int, token: dict = Depends(require_ceo)):
     """登録済みソースの実ファイルをダウンロードさせる（社長専用）。
 
     入力:
         source_id … ダウンロードしたいソースのID（URLパスで指定）
-        token     … require_admin が返すログイン情報（社長でなければ403で弾かれている）
+        token     … require_ceo が返すログイン情報（社長でなければ403で弾かれている）
 
     出力:
         ファイルの中身（StreamingResponse）。ブラウザには元のファイル名で保存させる。
 
     エラー:
-        403 … 社員がアクセスした場合（require_admin が投げる）
+        403 … 社員がアクセスした場合（require_ceo が投げる）
         400 … URLソースを指定した場合（実ファイルが存在しないため）
         404 … ソースが無い / 保存パスが想定形式でない / 実体が見つからない
 
@@ -922,7 +922,7 @@ async def download_source(source_id: int, token: dict = Depends(require_admin)):
 
     なぜ署名付きURLではなくサーバー経由で配信するのか（権限ルール）:
         署名付きURLは、URLを持っている人ならアプリを通さずにファイルを取得できる。
-        そうなると require_admin の判定を通らずに個別ソース（他人の評価・給与など）を
+        そうなると require_ceo の判定を通らずに個別ソース（他人の評価・給与など）を
         落とせてしまい、CLAUDE.md の権限ルールと噛み合わない。
         サーバー経由なら、毎回この関数の権限チェックを必ず通る。
 
@@ -993,9 +993,9 @@ async def delete_source(source_id: int, token: dict = Depends(require_source_upl
     """ソースを削除する（DB・実ファイル・Qdrantのベクトルをまとめて消す）。
 
     誰が使えるか（権限ルール）:
-        入口の require_source_uploader で admin / source_manager に絞る。
+        入口の require_source_uploader で ceo / source_manager に絞る。
         そのうえで、
-        - admin（社長）… 共通ソースも個別ソースも削除できる
+        - ceo（社長）… 共通ソースも個別ソースも削除できる
         - source_manager（共通ソース管理者）… 共通ソース（scope='common'）だけ削除できる。
           他人の個別ソース（評価・給与などの資料）には一切触れさせないため、
           個別ソースを指定された場合は403で弾く。
@@ -1027,7 +1027,7 @@ async def delete_source(source_id: int, token: dict = Depends(require_source_upl
         raise HTTPException(status_code=404, detail="ソースが見つかりません")
 
     # Issue #118。共通ソース管理者（source_manager）は共通ソースだけ削除できる。
-    # 社長（admin）はこれまで通りすべて削除できる。
+    # 社長（ceo）はこれまで通りすべて削除できる。
     #
     # なぜ source_id を受け取った時点で判定できないか:
     #     受け取れるのは source_id だけで、その時点では共通ソースか個別ソースか分からない。
@@ -1039,7 +1039,7 @@ async def delete_source(source_id: int, token: dict = Depends(require_source_upl
     #     （途中で失敗してもDBに行が残り、削除をやり直して復旧できるようにする）を
     #     厳密に守る必要がある。同じ手順を2箇所に持つと、片方だけ直し忘れる事故が起きる。
     #     そこで削除処理は1つのまま、判定だけを入口に置く形にした。
-    if token["role"] != ROLE_ADMIN and row["scope"] != "common":
+    if token["role"] != ROLE_CEO and row["scope"] != "common":
         raise HTTPException(status_code=403, detail="このソースを削除する権限がありません")
 
     # Qdrantから、このソース由来のチャンクをすべて削除する

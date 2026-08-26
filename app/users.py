@@ -42,7 +42,7 @@ def resolve_role(user: dict) -> str:
         3. 上書きが無ければ users.csv の role を返す
 
     出力:
-        実際に権限判定へ使うロール名の文字列（employee / source_manager / admin）
+        実際に権限判定へ使うロール名の文字列（employee / source_manager / ceo）
 
     なぜ「DBを正、CSVを既定値」とするのか:
         users.csv はGit管理下にあり、初期状態を決めるための読み取り専用のファイル。

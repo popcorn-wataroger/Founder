@@ -116,13 +116,13 @@ IMPORTANT: static/index.html に全画面のUIプロトタイプあり。デザ�
 ## 認証（MVP）
 
 - CSVファイルで社員マスタ管理（ダミーデータ）
-- ログインで社員コード＋パスワード → ロール判定（employee / source_manager / admin）
+- ログインで社員コード＋パスワード → ロール判定（employee / source_manager / ceo）
 - ADMIN=管理者、EMP001〜EMP006=社員、EMP007=共通ソース管理者
 
 ## データモデル
 
 ### users（社員マスタ）
-user_id(PK), employee_code, name, department, gender, birth_date, family, hire_date, employment_type, role(employee/source_manager/admin), password_hash, last_login_at
+user_id(PK), employee_code, name, department, gender, birth_date, family, hire_date, employment_type, role(employee/source_manager/ceo), password_hash, last_login_at
 
 ### sources（ソース）
 source_id(PK), file_name, file_type(pdf/docx/pptx/txt/url), file_path, scope(common/individual), owner_user_id(FK→users, NULLなら共通), uploaded_at, uploaded_by(FK→users)
@@ -155,12 +155,12 @@ IMPORTANT: これらの権限ルールは絶対に守ること。
 
 - 当初は削除を社長だけに許していた。共通ソースは全社員の回答根拠になるため、誤削除の影響範囲が登録より広く、削除権限の付与を別の判断として切り離していた（Issue #101）
 - Issue #118 でクライアントと合意し、共通ソース管理者にも**共通ソースの削除**を許すことにした。自分が登録したものを取り消せないと、誤登録のたびに社長の手を借りることになるため
-- ただし個別ソース（他人の評価・給与など）には届かない。DELETE /api/sources/{source_id} が受け取るのは source_id だけで、その時点では共通か個別か分からないため、判定は app/routers/sources_router.py の delete_source() が行う。404判定のために取得した行の scope を見て、admin 以外が scope != 'common' を指定した場合は403を返す
-- 入口の依存は require_admin から require_source_uploader に変わった。社員（employee）はこの入口で弾かれる
+- ただし個別ソース（他人の評価・給与など）には届かない。DELETE /api/sources/{source_id} が受け取るのは source_id だけで、その時点では共通か個別か分からないため、判定は app/routers/sources_router.py の delete_source() が行う。404判定のために取得した行の scope を見て、ceo 以外が scope != 'common' を指定した場合は403を返す
+- 入口の依存は require_ceo から require_source_uploader に変わった。社員（employee）はこの入口で弾かれる
 - 自分が上げた**個別**ソースを本人が削除できるようにするかは、引き続き別Issueとする（現状は社長のみ削除できる）
 - DBにはソースの owner_user_id フィールドを必ず持たせる（誰の資料かを一意に決め、検索と表示の絞り込みに使うため）
 - 社員がAIに質問した場合、個別ソース（他人の評価・給与情報）は絶対に回答に含めない
-- role は employee / source_manager / admin の3値。判定は app/routers/auth_router.py の can_upload_common_source() に集約している
+- role は employee / source_manager / ceo の3値。判定は app/routers/auth_router.py の can_upload_common_source() に集約している
 - 社員が自分の資料を登録する経路は POST /api/sources/my-upload。scope と owner_user_id はリクエストで指定できず、サーバーがJWTの user_id から決める
 - 社員のチャットの検索範囲は「共通ソース＋自分の個別ソース」。他人の個別ソースは app/vector_store.py の search() が構造的に除外する
 

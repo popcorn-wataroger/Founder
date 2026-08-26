@@ -63,7 +63,7 @@ async function handleLogin() {
   // なぜ source_manager を管理者ホームへ通さないか（重要）:
   //     #screen-admin にはスタッフ一覧・社員データ・AIチャットモーダルが同居しており、
   //     さらに初期化の initSourceManagement() が GET /api/admin/users と
-  //     GET /api/sources を呼ぶ。どちらも require_admin なので source_manager では
+  //     GET /api/sources を呼ぶ。どちらも require_ceo なので source_manager では
   //     403 になり、そのまま流用できない。
   //     「不要な部分を隠して見せる」形にすると、隠し忘れがそのまま権限の穴になるため、
   //     共通ソースの登録だけができる専用画面（#screen-source-manager）へ分けている。
@@ -72,7 +72,7 @@ async function handleLogin() {
   //     いちばん権限の狭いチャット画面へ倒す（else 側）。
   //     ロールが増えたときに、知らないロールが管理者画面や
   //     ソース登録画面へ流れ込まないようにするため、危険側に倒さない。
-  if (data.role === "admin") {
+  if (data.role === "ceo") {
     showScreen("screen-admin");
     // 管理者ホームの初期タブ（ソース管理）を描画する
     initSourceManagement();

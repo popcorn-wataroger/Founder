@@ -180,7 +180,7 @@ def _build_staff_filter(target_user_id: str) -> Filter:
         条件を Issue の文言どおりそのまま書き下しておく方が、後から読んで検証しやすい。
 
     なぜこの関数が必要か（重要）:
-        社長(admin)の通常検索はフィルタなし＝全社員の個別ソースが対象になる。
+        社長(ceo)の通常検索はフィルタなし＝全社員の個別ソースが対象になる。
         その状態で「奥村さんについて」と質問すると、別の社員の評価資料が
         根拠に混ざりうる。社員データ画面からの問い合わせでは、
         対象社員以外の個別ソースを検索の時点で除外する必要がある。
@@ -211,7 +211,7 @@ def search(
 
     入力:
         question       … ユーザーからの質問文
-        role           … 質問した人の役割。'admin'（社長）か 'employee'（社員）
+        role           … 質問した人の役割。'ceo'（社長）か 'employee'（社員）
         top_k          … 上位何件を返すか（既定は3件）
         target_user_id … 社員データ画面から「この社員について」質問する場合の対象社員の user_id。
                          省略時（None）は従来どおりの挙動になる
@@ -230,11 +230,11 @@ def search(
         4. 各ヒットの payload から text と source_id を取り出して返す
 
     権限について（重要）:
-        社員(admin以外)の検索では、既定で scope=='common' のチャンクだけを対象にする。
+        社員(ceo以外)の検索では、既定で scope=='common' のチャンクだけを対象にする。
         こうしないと、他人の人事評価や給与などの個別ソース(scope='individual')が
         検索でヒットし、AIの回答に混ざってしまう。ここが情報漏洩を防ぐ最後の砦になる。
         self_user_id を渡した場合だけ、そこに「自分の個別ソース」が加わる。
-        社長(admin)はフィルタを掛けず、共通・個別すべてのソースを検索できる。
+        社長(ceo)はフィルタを掛けず、共通・個別すべてのソースを検索できる。
 
     self_user_id に何を渡してよいか（重要）:
         リクエスト由来の値を渡してはならない。必ず JWT の user_id を渡すこと。
@@ -252,8 +252,8 @@ def search(
         「社員の経路で target_user_id を見ない」という規則をこの関数の中だけで守れる。
 
     判定の順番（この順である理由）:
-        1. 社員(admin以外) かつ self_user_id あり → 共通 ＋ 自分の個別のみ
-        2. 社員(admin以外) かつ 指定なし          → 共通のみ（従来どおり）
+        1. 社員(ceo以外) かつ self_user_id あり → 共通 ＋ 自分の個別のみ
+        2. 社員(ceo以外) かつ 指定なし          → 共通のみ（従来どおり）
         3. 社長 かつ target_user_id               → 共通 ＋ その社員の個別のみ
         4. 社長 かつ 指定なし                     → 絞り込みなし（従来どおり）
 
@@ -261,7 +261,7 @@ def search(
         渡ってきても、社員が他人の個別ソースに届くことはない
         （社員の経路では target_user_id を一切見ない、という既存の安全設計は
         self_user_id を足したあとも変えていない）。
-        呼び出し元（/api/chat/staff-inquiry）も require_admin で守っているので、
+        呼び出し元（/api/chat/staff-inquiry）も require_ceo で守っているので、
         入口と検索の二段構えになる。
 
     なぜベクトルで検索できるか:
@@ -272,8 +272,15 @@ def search(
     query_vector = embed_text(question)
 
     # 2. 権限に応じた検索範囲の絞り込み条件を作る
+    #
+    #    ここだけ ROLE_CEO 定数ではなく文字列を直に書いている理由:
+    #        定数の定義元は app/routers/auth_router.py で、そこを import すると
+    #        core（vector_store）→ routers という依存が生まれる。
+    #        このリポジトリは routers → core の一方向で揃えてあり
+    #        （app/users.py の resolve_role の docstring に明記）、逆流させたくない。
+    #        ロール名を変えるときは、この行も一緒に直す必要がある。
     query_filter: Filter | None
-    if role != "admin":
+    if role != "ceo":
         # 社員の経路。target_user_id はここでは一切見ない
         # （見てしまうと、他人を指す値が渡ったときに個別ソースが開いてしまう）
         if self_user_id is not None:

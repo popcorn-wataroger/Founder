@@ -1,19 +1,19 @@
 """共通ソース管理者（source_manager）の権限テスト。
 
 何を守りたいか:
-    1. 共通ソースのアップロードは admin と source_manager だけができること
+    1. 共通ソースのアップロードは ceo と source_manager だけができること
        （employee や未知のロール名では絶対に通らない）
-    2. 個別ソース（scope='individual'）の登録は admin だけができること。
+    2. 個別ソース（scope='individual'）の登録は ceo だけができること。
        個別ソースは特定の社員に紐づく資料（評価・給与など）なので、
        source_manager にも触らせない
     3. source_manager が「共通ソースを増やす」以外の管理者機能
        （スタッフ一覧・ダウンロード）に手を出せないこと
     4. 削除は source_manager でもできるが、共通ソースに限られること（Issue #118）。
-       他人の個別ソース（評価・給与など）は admin だけが削除できる
+       他人の個別ソース（評価・給与など）は ceo だけが削除できる
 
 DBを使うテストと使わないテストが混在している理由:
     1〜3で確かめたいのは「拒否されること」だけで、拒否は必ずDBに触る前に起きる。
-    - require_source_uploader / require_admin … ハンドラに入る前に403
+    - require_source_uploader / require_ceo … ハンドラに入る前に403
     - check_scope_permission … ハンドラ冒頭、DB接続より前に403
     そのため temp_db を使わず、テスト用DBが無い環境でも実行できる。
 
@@ -35,7 +35,7 @@ from app import database, storage
 from app.main import app
 from app.routers import sources_router
 from app.routers.auth_router import (
-    ROLE_ADMIN,
+    ROLE_CEO,
     ROLE_EMPLOYEE,
     ROLE_SOURCE_MANAGER,
     can_upload_common_source,
@@ -68,16 +68,16 @@ def _headers(user_id: str, role: str) -> dict[str, str]:
 @pytest.mark.parametrize(
     ("role", "期待"),
     [
-        (ROLE_ADMIN, True),
+        (ROLE_CEO, True),
         (ROLE_SOURCE_MANAGER, True),
         (ROLE_EMPLOYEE, False),
         ("manager", False),  # 存在しないロール名
-        ("Admin", False),  # 大文字違い（文字列比較なので一致しない）
+        ("Ceo", False),  # 大文字違い（文字列比較なので一致しない）
         ("", False),  # 空文字
     ],
 )
 def test_共通ソースをアップロードできる役割の判定(role: str, 期待: bool) -> None:
-    """許可するのは admin と source_manager だけ。
+    """許可するのは ceo と source_manager だけ。
 
     未知のロール名や空文字を False 側に倒しておくのが重要で、
     「知らない値は通す」実装にすると、ロールが増えたときに黙って権限が漏れる。
@@ -90,7 +90,7 @@ def test_共通ソースをアップロードできる役割の判定(role: str,
 
 @pytest.mark.parametrize("role", [ROLE_SOURCE_MANAGER, ROLE_EMPLOYEE])
 def test_個別ソースは管理者以外だと403(role: str) -> None:
-    """admin 以外が scope='individual' を指定すると HTTPException(403) になる。"""
+    """ceo 以外が scope='individual' を指定すると HTTPException(403) になる。"""
     with pytest.raises(HTTPException) as 例外:
         check_scope_permission(role, "individual")
 
@@ -99,15 +99,15 @@ def test_個別ソースは管理者以外だと403(role: str) -> None:
 
 
 def test_管理者なら個別ソースを指定できる() -> None:
-    """admin は個別ソースを登録できる（例外を投げずに戻ってくる）。"""
-    assert check_scope_permission(ROLE_ADMIN, "individual") is None
+    """ceo は個別ソースを登録できる（例外を投げずに戻ってくる）。"""
+    assert check_scope_permission(ROLE_CEO, "individual") is None
 
 
-@pytest.mark.parametrize("role", [ROLE_ADMIN, ROLE_SOURCE_MANAGER])
+@pytest.mark.parametrize("role", [ROLE_CEO, ROLE_SOURCE_MANAGER])
 def test_共通ソースなら通す(role: str) -> None:
     """scope='common' のときは何もしない。
 
-    入口の require_source_uploader で admin / source_manager に絞り込み済みで、
+    入口の require_source_uploader で ceo / source_manager に絞り込み済みで、
     そのどちらも共通ソースを登録してよいため、ここで重ねて弾く必要がない。
     """
     assert check_scope_permission(role, "common") is None
@@ -167,16 +167,16 @@ def test_社員はソースをアップロードできない() -> None:
     ],
 )
 def test_共通ソース管理者は管理者専用APIを叩けない(method: str, path: str) -> None:
-    """source_manager に許すのは共通ソースの登録と削除だけで、他の管理者機能は admin のまま。
+    """source_manager に許すのは共通ソースの登録と削除だけで、他の管理者機能は ceo のまま。
 
     特にダウンロードは、中身がそのまま手に入るため他人の個別ソース
-    （評価・給与など）に届いてしまう。require_admin を外していない。
+    （評価・給与など）に届いてしまう。require_ceo を外していない。
     存在しない source_id を指定しても、404ではなく403が返るのが正しい
     （権限判定はDBを引く前に終わっているので、ソースの有無を教えない）。
 
     削除（DELETE /api/sources/{source_id}）をこの一覧から外した理由:
         Issue #118 で source_manager にも共通ソースの削除を許したため、
-        入口の依存が require_admin から require_source_uploader に変わった。
+        入口の依存が require_ceo から require_source_uploader に変わった。
         「叩けない」ではなく「共通ソースだけ削除できる」が正しい仕様になったので、
         判定を確かめるテストは下の削除セクションへ移した。
     """
@@ -339,13 +339,13 @@ def test_管理者は個別ソースを削除できる(
 ) -> None:
     """Issue #118 の変更で、社長のこれまでの権限が狭まっていないことを確かめる。
 
-    依存を require_admin から require_source_uploader に緩めたうえで
-    ハンドラ内に判定を足したため、admin 側を素通しし損ねていないかを固定する。
+    依存を require_ceo から require_source_uploader に緩めたうえで
+    ハンドラ内に判定を足したため、ceo 側を素通しし損ねていないかを固定する。
     """
     source_id = _insert_source("individual", owner_user_id="2")
 
     response = TestClient(app).delete(
-        f"/api/sources/{source_id}", headers=_headers("ADMIN", ROLE_ADMIN)
+        f"/api/sources/{source_id}", headers=_headers("ADMIN", ROLE_CEO)
     )
 
     assert response.status_code == 200, response.text

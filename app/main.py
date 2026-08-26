@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from app.database import init_db
 from app.routers import auth_router, chat_router, sources_router
-from app.routers.auth_router import VALID_ROLES, require_admin
+from app.routers.auth_router import ROLE_CEO, VALID_ROLES, require_ceo
 from app.user_logins import get_last_login_at
 from app.user_roles import set_role
 from app.users import get_user_by_id, resolve_role, users
@@ -46,18 +46,21 @@ async def chat(req: ChatRequest):
 
 
 @app.get("/api/admin/users")
-async def get_admin_users(token: dict = Depends(require_admin)):
+async def get_admin_users(token: dict = Depends(require_ceo)):
     """管理者用スタッフ一覧APIエンドポイント（社長のみ）。
 
     権限について:
-        require_admin を付けているので、社員が叩くと403で拒否される。
+        require_ceo を付けているので、社員が叩くと403で拒否される。
         以前は verify_token だけだったため、ログインさえしていれば社員でも
         全社員の氏名・部署・雇用形態を取得できてしまっていた。
         スタッフ一覧は社長だけが見る画面なので、管理者チェックが必須。
     """
     result = []
     for user in users:
-        if user["role"] == "admin":
+        # CSVの role ではなく実効ロール（DBの上書きを優先）で判定する。
+        # CSVを見ると、DBで ceo にした社員が一覧に残り、
+        # DBで employee にした既定の社長が一覧から消えたままになる
+        if resolve_role(user) == ROLE_CEO:
             continue
         result.append(
             {
@@ -72,14 +75,12 @@ async def get_admin_users(token: dict = Depends(require_admin)):
 
 
 @app.get("/api/admin/users/{user_id}")
-async def get_admin_user_detail(
-    user_id: str, token: dict = Depends(require_admin)
-) -> dict[str, str]:
+async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)) -> dict[str, str]:
     """指定した社員1人分の基本情報を返す（社長専用）。
 
     入力:
         user_id … 見たい社員の user_id（URLパスで指定）
-        token   … require_admin が返すログイン情報（社長でなければ403で弾かれている）
+        token   … require_ceo が返すログイン情報（社長でなければ403で弾かれている）
 
     出力:
         基本情報の辞書（社員コード・氏名・部署・性別・生年月日・家族構成・
@@ -87,9 +88,9 @@ async def get_admin_user_detail(
 
     処理:
         1. user_id で社員を1件探す。見つからなければ404
-        2. role が admin なら404（下記の理由）
-        3. 最終ログイン日時を user_logins テーブルから取り出す
-        4. 実効ロールを resolve_role で決める（DBの上書きがあればそれ、無ければCSVの値）
+        2. 実効ロールを resolve_role で決める（DBの上書きがあればそれ、無ければCSVの値）
+        3. 実効ロールが ceo なら404（下記の理由）
+        4. 最終ログイン日時を user_logins テーブルから取り出す
         5. 画面に出す項目だけを1つずつ書き出して返す
 
     なぜ最終ログインだけCSVではなくDBから読むか:
@@ -109,28 +110,38 @@ async def get_admin_user_detail(
         社員データ画面でその社員のロールを表示し、変更するために必要になったため
         （変更は PUT /api/admin/users/{user_id}/role）。
         現在のロールが分からないと、画面は変更後の値を選ばせようがない。
-        このAPIは require_admin を付けた社長専用なので、
+        このAPIは require_ceo を付けた社長専用なので、
         社員が他人のロールを知る経路にはならない。
         なお、返すのは users.csv の role ではなく resolve_role の結果（実効ロール）。
         CSVの値をそのまま返すと、DBで上書きしたロールが画面に反映されず、
         「変更したのに変わっていない」ように見えてしまう。
 
-    なぜ admin を404にするか:
-        スタッフ一覧（GET /api/admin/users）が admin を除外しているため、
+    なぜ ceo を404にするか:
+        スタッフ一覧（GET /api/admin/users）が ceo を除外しているため、
         詳細だけ引ける状態にすると一覧と挙動がずれる。
         「一覧に出ない人は詳細も見られない」で揃えておく。
     """
     user = get_user_by_id(user_id)
 
-    # 存在しない user_id、または管理者本人（スタッフ一覧に出ない人）は404で揃える
-    if user is None or user["role"] == "admin":
+    # 存在しない user_id はここで打ち切る（このあと user を辿るため）
+    if user is None:
+        raise HTTPException(status_code=404, detail="社員が見つかりません")
+
+    # ロールはCSVの値ではなくDBの上書きを優先した「実効ロール」を使う。
+    # 404の判定と返す値の両方でこれを使い回すのは、resolve_role が
+    # user_roles をDBから引く（＝呼ぶたびに接続を開く）ため。
+    # 2回引くと同じ答えのために接続が2回開くうえ、その間にロールが
+    # 変わると「一覧に出ない人の詳細が返る」ような食い違いも起こりうる
+    role = resolve_role(user)
+
+    # 社長本人（スタッフ一覧に出ない人）も404で揃える。
+    # ここもスタッフ一覧と同じく実効ロールで見る。CSVの role で判定すると、
+    # 一覧には出ないのに詳細は引ける（またはその逆）というずれが生まれる
+    if role == ROLE_CEO:
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
     # 最終ログインはCSVではなくDBが持つ。記録が無ければ空文字（画面は「未記録」表示）
     last_login_at = get_last_login_at(user_id) or ""
-
-    # ロールはCSVの値ではなくDBの上書きを優先した「実効ロール」を返す
-    role = resolve_role(user)
 
     # 画面に出す項目だけを明示的に書き出す（password は返さない）
     return {
@@ -154,15 +165,15 @@ class RoleUpdateRequest(BaseModel):
 
 @app.put("/api/admin/users/{user_id}/role")
 async def update_admin_user_role(
-    user_id: str, req: RoleUpdateRequest, token: dict = Depends(require_admin)
+    user_id: str, req: RoleUpdateRequest, token: dict = Depends(require_ceo)
 ) -> dict[str, object]:
     """指定した社員のロールを変更する（社長専用）。
 
     入力:
         user_id … ロールを変える対象の user_id（URLパスで指定）
         req     … リクエストボディ（RoleUpdateRequest）
-            role … 変更後のロール名（employee / source_manager / admin）
-        token   … require_admin が返すログイン情報（社長でなければ403で弾かれている）
+            role … 変更後のロール名（employee / source_manager / ceo）
+        token   … require_ceo が返すログイン情報（社長でなければ403で弾かれている）
 
     出力:
         {"success": True, "user_id": 対象のuser_id, "role": 変更後のロール}
@@ -175,11 +186,11 @@ async def update_admin_user_role(
 
     エラー:
         400 … 知らないロール名を指定した場合
-        403 … 社員が叩いた場合（require_admin が投げる）／自分自身を対象にした場合
+        403 … 社員が叩いた場合（require_ceo が投げる）／自分自身を対象にした場合
         404 … 対象の user_id が存在しない場合
 
     権限について:
-        require_admin を付けているので、社員と source_manager が叩くと403で拒否される。
+        require_ceo を付けているので、社員と source_manager が叩くと403で拒否される。
         ロールの付け替えは「誰が何を見られるか」を決める操作なので、
         共通ソースを登録できるだけの source_manager には許さない。
 
@@ -195,12 +206,12 @@ async def update_admin_user_role(
         こちらにも書くと、ロールが増えたときに片方だけ直して
         「保存はできるが権限判定が知らないロール」ができてしまう。
 
-    なぜ get_admin_user_detail と違って admin を404にしないか:
+    なぜ get_admin_user_detail と違って ceo を404にしないか:
         あちらは「スタッフ一覧に出ない人は詳細も見られない」で揃えるために
-        admin を404にしている。
-        こちらは社長が誰かを管理者にする／管理者から降ろすための操作なので、
-        管理者を対象にできなければ機能そのものが成り立たない。
-        目的が違うので、admin の扱いも意図的に変えている。
+        ceo を404にしている。
+        こちらは社長が誰かを社長にする／社長から降ろすための操作なので、
+        社長を対象にできなければ機能そのものが成り立たない。
+        目的が違うので、ceo の扱いも意図的に変えている。
     """
     # 1. 知らないロール名を保存させない。
     #    ここを通してしまうと、権限判定が知らない値がDBに入り、
@@ -216,10 +227,10 @@ async def update_admin_user_role(
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
     # 3. 自分自身のロールは変えられない。
-    #    最後の管理者が自分を employee に落とすと、誰もこのAPIを叩けなくなり、
-    #    ロールを戻す手段がDBの直接操作しか無くなる（管理者ゼロの事故）。
-    #    変更先が admin であっても一律で拒否するのは、判定を単純に保つため。
-    #    「admin → admin なら実質何も変わらないので許す」といった例外を作ると、
+    #    最後の社長が自分を employee に落とすと、誰もこのAPIを叩けなくなり、
+    #    ロールを戻す手段がDBの直接操作しか無くなる（社長ゼロの事故）。
+    #    変更先が ceo であっても一律で拒否するのは、判定を単純に保つため。
+    #    「ceo → ceo なら実質何も変わらないので許す」といった例外を作ると、
     #    条件が増えるほど事故を防げているかの確認が難しくなる
     if user_id == token["user_id"]:
         raise HTTPException(status_code=403, detail="自分自身のロールは変更できません")

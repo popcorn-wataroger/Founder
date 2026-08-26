@@ -120,7 +120,7 @@ users（社員マスタ）
 ├── family（家族構成）
 ├── hire_date（入社日）
 ├── employment_type（雇用形態）
-├── role（social / admin）
+├── role（employee / source_manager / ceo）
 ├── password_hash
 └── last_login_at
 

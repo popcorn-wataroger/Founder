@@ -16,7 +16,7 @@ from app.chat_history import (
     get_sessions,
 )
 from app.rag import answer_question, answer_question_stream
-from app.routers.auth_router import require_admin, verify_token
+from app.routers.auth_router import ROLE_CEO, require_ceo, verify_token
 from app.users import format_user_profile, get_user_by_id
 
 # チャット関連のAPIをまとめるルーター。URLは /api/chat から始まる
@@ -168,7 +168,7 @@ async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
 
     権限について:
         verify_token だけを付けているので、ログイン済みなら社員・社長どちらも利用できる。
-        （require_admin は付けない。ソース管理と違い、質問は社員も行うため）
+        （require_ceo は付けない。ソース管理と違い、質問は社員も行うため）
         ただし role を answer_question → search まで渡すことで、検索範囲を権限で絞る。
         社員は共通ソースのみ、社長は全ソースが対象になる。
 
@@ -187,7 +187,7 @@ async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
         raise HTTPException(status_code=400, detail="質問を入力してください")
 
     # 2. ログイン情報（JWTの中身）から、誰の会話か(user_id)と、どの権限か(role)を取り出す
-    #    role は 'admin'（社長）か 'employee'（社員）。検索範囲の絞り込みに使う
+    #    role は 'ceo'（社長）か 'employee'（社員）。検索範囲の絞り込みに使う
     user_id = token["user_id"]
     role = token["role"]
 
@@ -367,12 +367,12 @@ async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
 
 
 @router.post("/staff-inquiry")
-async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(require_admin)):
+async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(require_ceo)):
     """「この社員について」の質問に、共通＋その社員の個別ソースを参照して答える（社長専用・SSE）。
 
     入力:
         req   … StaffInquiryRequest（question / target_user_id / 任意の session_id）
-        token … require_admin が返すログイン情報（社長でなければ403で弾かれている）
+        token … require_ceo が返すログイン情報（社長でなければ403で弾かれている）
 
     出力:
         text/event-stream 形式のストリーム。イベントの順番は /api/chat/stream と同じ
@@ -413,9 +413,9 @@ async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(r
     if not question:
         raise HTTPException(status_code=400, detail="質問を入力してください")
 
-    # 2. 対象の社員が実在するかを確認する（存在しないIDや管理者自身は404）
+    # 2. 対象の社員が実在するかを確認する（存在しないIDや社長自身は404）
     target_user = get_user_by_id(req.target_user_id)
-    if target_user is None or target_user["role"] == "admin":
+    if target_user is None or target_user["role"] == ROLE_CEO:
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
     # 3. どのセッションに記録するかを決める（持ち主は必ずトークンの user_id ＝ 社長）
@@ -429,7 +429,7 @@ async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(r
     #    profile には、その社員の基本情報（部署・生年月日・家族構成など）を渡す。
     #    社員データ画面に出ている情報をAIも参照できるようにするため。
     #    渡してよい項目の線引きは format_user_profile が持っている（password や role は含まない）。
-    #    このAPIは require_admin が付いた社長専用なので、
+    #    このAPIは require_ceo が付いた社長専用なので、
     #    社員が他人の基本情報をAIから引き出す経路にはならない。
     referenced_sources, chunk_iterator = answer_question_stream(
         question,
@@ -529,7 +529,7 @@ async def list_session_messages(session_id: int, token: dict = Depends(verify_to
         session_id は連番なので、社員が /api/chat/sessions/3/messages のように
         他人のセッションIDを推測して叩くのは非常に簡単。
         そのままメッセージを返す実装にすると、他人のチャットログが丸見えになる。
-        そこで「セッションの持ち主 == 自分」か「社長（admin）」の場合だけ許可する。
+        そこで「セッションの持ち主 == 自分」か「社長（ceo）」の場合だけ許可する。
         社長は社員データ画面で全員のログを閲覧できる必要があるため、例外として通す。
     """
     # 1. このセッションが誰のものかを調べる
@@ -542,8 +542,8 @@ async def list_session_messages(session_id: int, token: dict = Depends(verify_to
     # 2. 見てよい人かを判定する
     #    許可するのは「本人」か「社長」だけ。それ以外（＝他人のセッションを見ようとした社員）は拒否
     is_owner = owner_user_id == token["user_id"]
-    is_admin = token.get("role") == "admin"
-    if not is_owner and not is_admin:
+    is_ceo = token.get("role") == ROLE_CEO
+    if not is_owner and not is_ceo:
         raise HTTPException(status_code=403, detail="このチャット履歴は閲覧できません")
 
     # 3. メッセージ一覧を時系列で返す
@@ -551,12 +551,12 @@ async def list_session_messages(session_id: int, token: dict = Depends(verify_to
 
 
 @admin_router.get("/users/{user_id}/chat-sessions")
-async def list_user_sessions(user_id: str, token: dict = Depends(require_admin)):
+async def list_user_sessions(user_id: str, token: dict = Depends(require_ceo)):
     """指定した社員のチャットセッション一覧を返す（社長専用）。
 
     入力:
         user_id … 履歴を見たい社員の user_id（URLパスで指定）
-        token   … require_admin が返すログイン情報（社長でなければ403で弾かれている）
+        token   … require_ceo が返すログイン情報（社長でなければ403で弾かれている）
 
     出力:
         その社員のセッション一覧（新しい順）
@@ -567,7 +567,7 @@ async def list_user_sessions(user_id: str, token: dict = Depends(require_admin))
         トーク全文モーダルの中身を取得できる。
 
     権限について:
-        require_admin を付けているので、社員がこのURLを叩いても403で拒否される。
+        require_ceo を付けているので、社員がこのURLを叩いても403で拒否される。
         他人の user_id を自由に指定できるAPIなので、管理者チェックは必須。
     """
     return get_sessions(user_id)

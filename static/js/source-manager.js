@@ -17,8 +17,8 @@
 //     POST /api/sources/my-upload と同じ考え方。
 //
 //     なお最終的な権限判定はサーバー側が持つ。
-//     入口は require_source_uploader（admin / source_manager のみ通す）、
-//     個別ソースの登録は check_scope_permission が admin だけに限定する。
+//     入口は require_source_uploader（ceo / source_manager のみ通す）、
+//     個別ソースの登録は check_scope_permission が ceo だけに限定する。
 //     画面側でUIを出さないのは利便性のためで、権限の砦はあくまでサーバー側。
 
 // 処理中・成功・失敗のメッセージを画面に表示する
@@ -110,7 +110,7 @@ function onCommonSourceDrop(event) {
 // 出力: なし（#sm-status に結果を表示する）
 //
 // エラーになる場面:
-//     403 … source_manager でも admin でもないロールで叩いた場合
+//     403 … source_manager でも ceo でもないロールで叩いた場合
 //     400 … 対応していない拡張子
 //     413 … 50MBを超えるファイル
 //     500 … 保存・ベクトル化の失敗（この場合サーバー側でソース登録は取り消される）
@@ -242,7 +242,7 @@ let commonSourceListRequestId = 0;
 // 出力: なし（一覧の表示が変わる）
 //
 // エラーになる場面:
-//     403 … source_manager でも admin でもないロールで叩いた場合
+//     403 … source_manager でも ceo でもないロールで叩いた場合
 //     通信失敗 … オフラインやサーバー停止
 //     どちらも一覧の中に文言を出すだけにして、#sm-status（登録結果の表示）は触らない。
 //     登録の成否と一覧の取得失敗が同じ場所に出ると、どちらの結果か分からなくなる。
@@ -310,7 +310,7 @@ function setCommonSourceListMessage(message) {
 //     ただし削除できるのは共通ソース（scope='common'）だけで、
 //     他人の個別ソース（評価・給与など）には届かない。
 //     判定を持つのはサーバー側の delete_source() で、DBから取った行の scope を見て
-//     admin 以外が個別ソースを指定した場合は403を返す。
+//     ceo 以外が個別ソースを指定した場合は403を返す。
 //     この画面が扱うのは共通ソースだけ（GET /api/sources/common は
 //     scope='common' しか返さない）なので、一覧に出る行はすべて削除してよい対象になる。
 function buildCommonSourceItem(source) {
