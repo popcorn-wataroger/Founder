@@ -68,6 +68,13 @@ async function handleLogin() {
   //     「不要な部分を隠して見せる」形にすると、隠し忘れがそのまま権限の穴になるため、
   //     共通ソースの登録だけができる専用画面（#screen-source-manager）へ分けている。
   //
+  // なぜ admin を業務画面へ通さないか（Issue #122）:
+  //     admin はアカウントの管理だけを担当し、チャットやソースといった
+  //     業務データには触れない役割。#screen-chat や #screen-source-manager へ通すと、
+  //     押しても403になるだけのボタンが並ぶ画面を見せることになる。
+  //     サーバー側も require_business_user が業務APIで admin を403にするため、
+  //     画面と権限の線引きを揃えて、専用の #screen-account-admin へ送る。
+  //
   // 未知のロールが返った場合:
   //     いちばん権限の狭いチャット画面へ倒す（else 側）。
   //     ロールが増えたときに、知らないロールが管理者画面や
@@ -80,6 +87,9 @@ async function handleLogin() {
     showScreen("screen-source-manager");
     // 前の人の登録結果が残らないよう、ステータス表示をクリアする
     initCommonSourceScreen();
+  } else if (data.role === "admin") {
+    // いまは中身のない仮画面なので、初期化のために呼ぶ処理は無い
+    showScreen("screen-account-admin");
   } else {
     showScreen("screen-chat");
     // 前回までの会話をサーバーから取り直して吹き出しを並べ直す。

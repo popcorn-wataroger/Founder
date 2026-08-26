@@ -1042,6 +1042,42 @@ body {
   </div>
 </div>
 
+<!-- ===== ACCOUNT ADMIN SCREEN ===== -->
+<!-- システム管理者（admin）専用の画面。いまは中身のない仮画面（Issue #122）。
+     #screen-admin を流用せず独立した画面にしているのは、#screen-source-manager と同じ理由。
+     あちらにはソース管理・スタッフ一覧・社員データが同居しており、「隠す」方式では
+     隠し忘れがそのまま権限の穴になる。この画面にはそれらのDOMが存在しないため、
+     業務機能の導線が出ないことが構造的に保証される
+     （サーバー側も require_business_user が admin を403で弾く）。
+
+     .sidebar-item を1つも置いていないのは意図的。showAdminTab() が
+     document.querySelectorAll('.sidebar-item') を添字で引いているため、
+     ここに増やすと管理者ホームのタブ選択の添字がずれる。 -->
+<div id="screen-account-admin" class="screen admin-screen">
+  <div class="sidebar">
+    <div class="sidebar-logo">F<span>.</span></div>
+    <div class="sidebar-badge">ACCOUNT</div>
+    <div class="sidebar-bottom">
+      <!-- ログアウトは既存画面と同じ logout()（index.html 内で定義）を呼ぶ。
+           トークン削除と世代番号の更新はあの関数がまとめて行う -->
+      <div class="sidebar-user" onclick="logout()">
+        <div class="sidebar-user-avatar">シ</div>
+        <div>
+          <div class="sidebar-user-name">システム管理者</div>
+          <div class="sidebar-user-role">ログアウト</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main-content">
+    <div class="main-header">
+      <h1 class="main-title">アカウント管理</h1>
+    </div>
+    <p style="font-size: 13px; color: var(--text-secondary);">アカウント管理画面は準備中です</p>
+  </div>
+</div>
+
 <!-- ===== CHAT LOG MODAL ===== -->
 <div id="modal-chatlog" class="modal-overlay" onclick="if(event.target===this)closeModal('modal-chatlog')">
   <div class="modal">
