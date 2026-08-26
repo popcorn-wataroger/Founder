@@ -23,10 +23,12 @@ security = HTTPBearer(auto_error=False)
 ROLE_CEO = "ceo"
 ROLE_SOURCE_MANAGER = "source_manager"
 ROLE_EMPLOYEE = "employee"
+# システム管理者。アカウントの管理だけを担当し、業務機能（チャットやソース）は使わない
+ROLE_ADMIN = "admin"
 
 # 受け付けてよいロール名の全体。ロールを増やすときはここに足せば、
 # 検証している側（ロール変更API）は触らずに済む
-VALID_ROLES = frozenset({ROLE_CEO, ROLE_SOURCE_MANAGER, ROLE_EMPLOYEE})
+VALID_ROLES = frozenset({ROLE_CEO, ROLE_SOURCE_MANAGER, ROLE_EMPLOYEE, ROLE_ADMIN})
 
 
 def create_access_token(user_id: str, role: str) -> str:
@@ -118,6 +120,72 @@ def require_source_uploader(token: dict = Depends(verify_token)) -> dict:
     """
     if not can_upload_common_source(token.get("role", "")):
         raise HTTPException(status_code=403, detail="共通ソースをアップロードする権限がありません")
+    return token
+
+
+def can_manage_accounts(role: str) -> bool:
+    """アカウントを管理できる役割かどうかを判定する。
+
+    入力:
+        role … ロール名の文字列（例: "admin" / "ceo" / "employee"）。
+                JWTの role や users.csv の role をそのまま渡す想定。
+
+    処理:
+        role が ROLE_ADMIN に一致するかを調べる。
+        一致しないもの（未知のロール名や空文字を含む）はすべて許可しない側に倒す。
+
+    出力:
+        アカウント管理を許可してよいなら True、それ以外は False。
+    """
+    return role == ROLE_ADMIN
+
+
+def require_account_manager(token: dict = Depends(verify_token)) -> dict:
+    """アカウント管理の権限がなければ403を返す。
+
+    入力:
+        token … verify_token が検証したJWTの中身（user_id / role を含む）
+
+    処理:
+        token から role を取り出し、can_manage_accounts() で可否を判定する。
+
+    出力:
+        権限があれば token をそのまま返す。なければ 403 を投げる。
+
+    判定を can_manage_accounts() に分けている理由:
+        require_source_uploader と同じく、
+        「誰がその権限を持つか（役割の持ち方）」と
+        「どこでその権限を要求するか（FastAPIの依存関係としての使い方）」を
+        分離しておくため。将来アカウント管理を担う役割が増えても、
+        差し替えるのは can_manage_accounts() の中身だけで済む。
+    """
+    if not can_manage_accounts(token.get("role", "")):
+        raise HTTPException(status_code=403, detail="アカウント管理の権限がありません")
+    return token
+
+
+def require_business_user(token: dict = Depends(verify_token)) -> dict:
+    """システム管理者を業務機能から締め出す。それ以外は通す。
+
+    入力:
+        token … verify_token が検証したJWTの中身（user_id / role を含む）
+
+    処理:
+        token から role を取り出し、ROLE_ADMIN かどうかを調べる。
+
+    出力:
+        システム管理者でなければ token をそのまま返す。
+        システム管理者なら 403 を投げる。
+
+    require_account_manager と対になっている理由:
+        システム管理者はアカウントを作る・消すことだけを担当する役割で、
+        チャットやソースといった業務データには触れさせない。
+        業務側のエンドポイントに Depends(require_business_user) を付けることで、
+        「アカウント管理はできるが業務は使えない」という線引きを
+        入口の1か所で表す。
+    """
+    if token.get("role") == ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="システム管理者は業務機能を利用できません")
     return token
 
 
