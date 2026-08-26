@@ -1,6 +1,7 @@
 """社員データ画面が使う管理者APIのテスト。
 
 対象:
+    GET /api/admin/users                    … スタッフ一覧
     GET /api/admin/users/{user_id}          … 社員1人分の基本情報
     GET /api/admin/users/{user_id}/sources  … その社員の個別ソース一覧
 
@@ -10,6 +11,7 @@
          このAPIは require_ceo の社長専用で、社員には届かない）
     2. 他人の個別ソースや全社共通ソースが、その社員の欄に出てこないこと
     3. 社員（employee）がこれらのURLを叩いても拒否されること
+    4. 誰を社長として扱うかを、CSVではなく user_roles の上書きを優先して決めること
 """
 
 from collections.abc import Iterator
@@ -119,10 +121,48 @@ def test_存在しないuser_idは404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_管理者本人のuser_idは404(client: TestClient) -> None:
-    """スタッフ一覧が ceo を除外しているので、詳細も見られない扱いに揃える。"""
+def test_管理者本人のuser_idは404(client: TestClient, temp_db: None) -> None:
+    """スタッフ一覧が ceo を除外しているので、詳細も見られない扱いに揃える。
+
+    判定が実効ロール（user_roles の上書きを優先）に変わったため、
+    上書きの無い状態から始められるよう temp_db を使う。
+    """
     response = client.get("/api/admin/users/1")
     assert response.status_code == 404
+
+
+def test_DBでceoに上げた社員はスタッフ一覧に出ない(client: TestClient, temp_db: None) -> None:
+    """スタッフ一覧の除外判定も、CSVの role ではなく実効ロールで行う。
+
+    なぜ確かめるか:
+        CSVの role で判定すると、DBで ceo に変更した社員が一覧に残り続ける。
+        社長がスタッフとして並び、その人の社員データ画面まで開ける状態になる。
+
+    EMP001（user_id=2）は users.csv では employee。これを ceo に上書きする。
+    """
+    set_role("2", "ceo", updated_by="1")
+
+    response = client.get("/api/admin/users")
+
+    assert response.status_code == 200, response.text
+    assert "EMP001" not in [staff["employee_code"] for staff in response.json()]
+
+
+def test_DBでemployeeに下げた社長はスタッフ一覧に出る(client: TestClient, temp_db: None) -> None:
+    """逆向きの取りこぼしも固定する。降ろした社長は普通のスタッフとして扱う。
+
+    なぜ確かめるか:
+        CSVの role で判定すると、DBで employee に変更しても一覧から消えたままになり、
+        社員データ画面を開く導線が無いので、ログもソースも辿れなくなる。
+
+    ADMIN（user_id=1）は users.csv では ceo。これを employee に上書きする。
+    """
+    set_role("1", "employee", updated_by="1")
+
+    response = client.get("/api/admin/users")
+
+    assert response.status_code == 200, response.text
+    assert "ADMIN" in [staff["employee_code"] for staff in response.json()]
 
 
 def test_個別ソースは本人のものだけ返る(client: TestClient, temp_db: None) -> None:

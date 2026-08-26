@@ -57,7 +57,10 @@ async def get_admin_users(token: dict = Depends(require_ceo)):
     """
     result = []
     for user in users:
-        if user["role"] == ROLE_CEO:
+        # CSVの role ではなく実効ロール（DBの上書きを優先）で判定する。
+        # CSVを見ると、DBで ceo にした社員が一覧に残り、
+        # DBで employee にした既定の社長が一覧から消えたままになる
+        if resolve_role(user) == ROLE_CEO:
             continue
         result.append(
             {
@@ -85,9 +88,9 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
 
     処理:
         1. user_id で社員を1件探す。見つからなければ404
-        2. role が ceo なら404（下記の理由）
-        3. 最終ログイン日時を user_logins テーブルから取り出す
-        4. 実効ロールを resolve_role で決める（DBの上書きがあればそれ、無ければCSVの値）
+        2. 実効ロールを resolve_role で決める（DBの上書きがあればそれ、無ければCSVの値）
+        3. 実効ロールが ceo なら404（下記の理由）
+        4. 最終ログイン日時を user_logins テーブルから取り出す
         5. 画面に出す項目だけを1つずつ書き出して返す
 
     なぜ最終ログインだけCSVではなくDBから読むか:
@@ -120,15 +123,25 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
     """
     user = get_user_by_id(user_id)
 
-    # 存在しない user_id、または社長本人（スタッフ一覧に出ない人）は404で揃える
-    if user is None or user["role"] == ROLE_CEO:
+    # 存在しない user_id はここで打ち切る（このあと user を辿るため）
+    if user is None:
+        raise HTTPException(status_code=404, detail="社員が見つかりません")
+
+    # ロールはCSVの値ではなくDBの上書きを優先した「実効ロール」を使う。
+    # 404の判定と返す値の両方でこれを使い回すのは、resolve_role が
+    # user_roles をDBから引く（＝呼ぶたびに接続を開く）ため。
+    # 2回引くと同じ答えのために接続が2回開くうえ、その間にロールが
+    # 変わると「一覧に出ない人の詳細が返る」ような食い違いも起こりうる
+    role = resolve_role(user)
+
+    # 社長本人（スタッフ一覧に出ない人）も404で揃える。
+    # ここもスタッフ一覧と同じく実効ロールで見る。CSVの role で判定すると、
+    # 一覧には出ないのに詳細は引ける（またはその逆）というずれが生まれる
+    if role == ROLE_CEO:
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
     # 最終ログインはCSVではなくDBが持つ。記録が無ければ空文字（画面は「未記録」表示）
     last_login_at = get_last_login_at(user_id) or ""
-
-    # ロールはCSVの値ではなくDBの上書きを優先した「実効ロール」を返す
-    role = resolve_role(user)
 
     # 画面に出す項目だけを明示的に書き出す（password は返さない）
     return {
