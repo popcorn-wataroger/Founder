@@ -16,7 +16,7 @@ from app.chat_history import (
     get_sessions,
 )
 from app.rag import answer_question, answer_question_stream
-from app.routers.auth_router import ROLE_CEO, require_ceo, verify_token
+from app.routers.auth_router import ROLE_CEO, require_business_user, require_ceo
 from app.users import format_user_profile, get_user_by_id
 
 # チャット関連のAPIをまとめるルーター。URLは /api/chat から始まる
@@ -145,12 +145,13 @@ def _resolve_session(
 
 
 @router.post("")
-async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
+async def chat(req: ChatRequest, token: dict = Depends(require_business_user)):
     """質問を受け取り、RAGで生成したAIの回答を返す。あわせて会話をDBに記録する。
 
     入力:
         req   … ChatRequest（question を含むJSONボディ）
-        token … verify_token が返すログイン情報（user_id と role を含む。社員・社長どちらでも可）
+        token … require_business_user が返すログイン情報
+                （user_id と role を含む。社員・社長どちらでも可）
 
     出力:
         {"reply": AIの回答文, "referenced_sources": 参照したsource_idのリスト} のJSON
@@ -167,10 +168,13 @@ async def chat(req: ChatRequest, token: dict = Depends(verify_token)):
         6. 回答と参照ソースIDをJSONで返す
 
     権限について:
-        verify_token だけを付けているので、ログイン済みなら社員・社長どちらも利用できる。
+        require_business_user を付けているので、システム管理者(admin)を除く
+        ログイン済みユーザー（社員・共通ソース管理者・社長）が利用できる。
         （require_ceo は付けない。ソース管理と違い、質問は社員も行うため）
         ただし role を answer_question → search まで渡すことで、検索範囲を権限で絞る。
         社員は共通ソースのみ、社長は全ソースが対象になる。
+        システム管理者(admin)はアカウント管理だけを担当する役割なので、
+        業務機能であるチャットは使わせない（入口の require_business_user が403で弾く）。
 
     session_id を受け取るときの権限チェック:
         他人のセッションに書き込めないよう、_resolve_session が持ち主を検証する（詳細はそちら）。
@@ -309,12 +313,12 @@ def _build_event_stream(
 
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
+async def chat_stream(req: ChatRequest, token: dict = Depends(require_business_user)):
     """質問を受け取り、AIの回答を「生成された端から少しずつ」流して返す（SSE版）。
 
     入力:
         req   … ChatRequest（question と、任意の session_id）
-        token … verify_token が返すログイン情報（user_id と role を含む）
+        token … require_business_user が返すログイン情報（user_id と role を含む）
 
     出力:
         text/event-stream 形式のストリーム。次の順でイベントが流れる:
@@ -334,6 +338,7 @@ async def chat_stream(req: ChatRequest, token: dict = Depends(verify_token)):
     権限について:
         検索範囲の絞り込み（社員は共通ソースのみ）も、
         session_id の持ち主チェックも、非ストリーミング版とまったく同じ。
+        システム管理者(admin)が入口の require_business_user で403になる点も同じ。
     """
     # 1. 前後の空白を除いて、質問が実質空でないか確認する
     question = req.question.strip()
@@ -445,12 +450,12 @@ async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(r
 
 
 @router.post("/sessions")
-async def create_chat_session(req: SessionRequest, token: dict = Depends(verify_token)):
+async def create_chat_session(req: SessionRequest, token: dict = Depends(require_business_user)):
     """新しいチャットセッションを作り、その session_id を返す。
 
     入力:
         req   … SessionRequest（context_type を含む。省略時は 'general'）
-        token … verify_token が返すログイン情報（user_id を含む）
+        token … require_business_user が返すログイン情報（user_id を含む）
 
     出力:
         {"session_id": 採番されたセッションID}
@@ -470,6 +475,8 @@ async def create_chat_session(req: SessionRequest, token: dict = Depends(verify_
         誰のセッションを作るかは、リクエストではなくトークンから決める。
         user_id をリクエストで受け取る設計にすると、他人のIDを送りつけて
         他人名義のセッションを作れてしまう。GET /api/chat/sessions と同じ考え方。
+        なお、そもそも会話を持たないシステム管理者(admin)は、
+        入口の require_business_user で403になる。
     """
     # 1. 会話の種類が想定内の値かを確認する（想定外の値がDBに入るのを防ぐ）
     if req.context_type not in VALID_CONTEXT_TYPES:
@@ -488,11 +495,11 @@ async def create_chat_session(req: SessionRequest, token: dict = Depends(verify_
 
 
 @router.get("/sessions")
-async def list_my_sessions(token: dict = Depends(verify_token)):
+async def list_my_sessions(token: dict = Depends(require_business_user)):
     """ログイン中の本人のチャットセッション一覧を返す。
 
     入力:
-        token … verify_token が返すログイン情報（user_id を含む）
+        token … require_business_user が返すログイン情報（user_id を含む）
 
     出力:
         セッションの一覧（新しい順）。各件に session_id / started_at / preview を含む
@@ -502,6 +509,8 @@ async def list_my_sessions(token: dict = Depends(verify_token)):
         user_id をリクエストから受け取らず、必ずトークンから取り出すのがポイント。
         フロントから user_id を送らせる設計にすると、他人のIDを送りつけて
         他人の履歴を見られてしまうため、なりすましの余地を残さない。
+        チャットを使わないシステム管理者(admin)は、
+        入口の require_business_user で403になる。
     """
     # 誰のセッションを返すかは、リクエストではなくトークンだけで決める
     user_id = token["user_id"]
@@ -510,12 +519,12 @@ async def list_my_sessions(token: dict = Depends(verify_token)):
 
 
 @router.get("/sessions/{session_id}/messages")
-async def list_session_messages(session_id: int, token: dict = Depends(verify_token)):
+async def list_session_messages(session_id: int, token: dict = Depends(require_business_user)):
     """指定セッションのメッセージ全文を、時系列で返す。
 
     入力:
         session_id … 見たいセッションのID（URLパスで指定）
-        token      … verify_token が返すログイン情報（user_id と role を含む）
+        token      … require_business_user が返すログイン情報（user_id と role を含む）
 
     出力:
         メッセージの一覧（古い順）。各件に role / content / created_at を含む
@@ -531,6 +540,8 @@ async def list_session_messages(session_id: int, token: dict = Depends(verify_to
         そのままメッセージを返す実装にすると、他人のチャットログが丸見えになる。
         そこで「セッションの持ち主 == 自分」か「社長（ceo）」の場合だけ許可する。
         社長は社員データ画面で全員のログを閲覧できる必要があるため、例外として通す。
+        システム管理者(admin)はこの判定に届く前に、
+        入口の require_business_user が403で弾く（他人のログを覗く経路を作らない）。
     """
     # 1. このセッションが誰のものかを調べる
     owner_user_id = get_session_owner(session_id)
