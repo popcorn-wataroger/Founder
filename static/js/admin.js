@@ -471,7 +471,7 @@ function renderStaffProfile(user) {
 /**
  * 権限（ロール）の欄を、その社員の現在の値に合わせる。
  *
- * 入力: role … APIが返した実効ロール（employee / source_manager / ceo）
+ * 入力: role … APIが返した実効ロール（employee / source_manager / ceo / admin）
  * 出力: なし（select と保存ボタン、状態表示を書き換える）
  *
  * 別の社員を開いたときに前の状態が残らないよう、ここで毎回
@@ -491,7 +491,7 @@ function renderStaffProfile(user) {
  */
 function renderStaffRole(role) {
   const select = document.getElementById("detail-role-select");
-  const known = ["employee", "source_manager", "ceo"].includes(role);
+  const known = ["employee", "source_manager", "ceo", "admin"].includes(role);
 
   currentStaffRole = known ? role : "employee";
   select.value = currentStaffRole;

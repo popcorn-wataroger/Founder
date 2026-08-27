@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from app.database import init_db
 from app.routers import auth_router, chat_router, sources_router
-from app.routers.auth_router import ROLE_CEO, VALID_ROLES, require_ceo
+from app.routers.auth_router import STAFF_LIST_EXCLUDED_ROLES, VALID_ROLES, require_ceo
 from app.user_logins import get_last_login_at
 from app.user_roles import set_role
 from app.users import get_user_by_id, resolve_role, users
@@ -54,13 +54,19 @@ async def get_admin_users(token: dict = Depends(require_ceo)):
         以前は verify_token だけだったため、ログインさえしていれば社員でも
         全社員の氏名・部署・雇用形態を取得できてしまっていた。
         スタッフ一覧は社長だけが見る画面なので、管理者チェックが必須。
+
+    誰を一覧から外すか:
+        STAFF_LIST_EXCLUDED_ROLES（ceo / admin）のロールを持つ人は並べない。
+        ceo は見ている本人で、admin は業務データを持たない役割のため、
+        どちらも「資料やトークを追う」というこの画面の目的に当てはまらない。
+        除外するロールの一覧は app/routers/auth_router.py に集約している。
     """
     result = []
     for user in users:
         # CSVの role ではなく実効ロール（DBの上書きを優先）で判定する。
         # CSVを見ると、DBで ceo にした社員が一覧に残り、
         # DBで employee にした既定の社長が一覧から消えたままになる
-        if resolve_role(user) == ROLE_CEO:
+        if resolve_role(user) in STAFF_LIST_EXCLUDED_ROLES:
             continue
         result.append(
             {
@@ -89,7 +95,7 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
     処理:
         1. user_id で社員を1件探す。見つからなければ404
         2. 実効ロールを resolve_role で決める（DBの上書きがあればそれ、無ければCSVの値）
-        3. 実効ロールが ceo なら404（下記の理由）
+        3. 実効ロールが STAFF_LIST_EXCLUDED_ROLES（ceo / admin）なら404（下記の理由）
         4. 最終ログイン日時を user_logins テーブルから取り出す
         5. 画面に出す項目だけを1つずつ書き出して返す
 
@@ -116,10 +122,14 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
         CSVの値をそのまま返すと、DBで上書きしたロールが画面に反映されず、
         「変更したのに変わっていない」ように見えてしまう。
 
-    なぜ ceo を404にするか:
-        スタッフ一覧（GET /api/admin/users）が ceo を除外しているため、
-        詳細だけ引ける状態にすると一覧と挙動がずれる。
+    なぜ ceo と admin を404にするか:
+        スタッフ一覧（GET /api/admin/users）が同じ STAFF_LIST_EXCLUDED_ROLES で
+        両者を除外しているため、詳細だけ引ける状態にすると一覧と挙動がずれる。
         「一覧に出ない人は詳細も見られない」で揃えておく。
+        admin を含めるのは、アカウント管理だけを担当して業務データを持たない役割だから。
+        部署や家族構成、最終ログインを社員データ画面で追う対象ではない。
+        判定に使う集合を一覧と共有しているので、次にロールが増えても
+        「一覧には出ないのに詳細は引ける」というずれは生まれない。
     """
     user = get_user_by_id(user_id)
 
@@ -134,10 +144,10 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
     # 変わると「一覧に出ない人の詳細が返る」ような食い違いも起こりうる
     role = resolve_role(user)
 
-    # 社長本人（スタッフ一覧に出ない人）も404で揃える。
-    # ここもスタッフ一覧と同じく実効ロールで見る。CSVの role で判定すると、
+    # 社長本人とシステム管理者（スタッフ一覧に出ない人）も404で揃える。
+    # ここもスタッフ一覧と同じく実効ロールで、同じ集合を見る。CSVの role で判定すると、
     # 一覧には出ないのに詳細は引ける（またはその逆）というずれが生まれる
-    if role == ROLE_CEO:
+    if role in STAFF_LIST_EXCLUDED_ROLES:
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
     # 最終ログインはCSVではなくDBが持つ。記録が無ければ空文字（画面は「未記録」表示）

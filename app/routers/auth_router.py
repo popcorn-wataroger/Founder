@@ -30,6 +30,22 @@ ROLE_ADMIN = "admin"
 # 検証している側（ロール変更API）は触らずに済む
 VALID_ROLES = frozenset({ROLE_CEO, ROLE_SOURCE_MANAGER, ROLE_EMPLOYEE, ROLE_ADMIN})
 
+# スタッフ一覧（管理者ホームの社員カード）に並べないロール。
+#
+# なぜ除外するのか:
+#     スタッフ一覧は「業務上の社員」を並べて、その人の資料やトークを追うための画面。
+#     ceo は閲覧している本人（自分のカードを自分で開く意味がない）、
+#     admin はアカウントの管理だけを担当して業務データを持たない役割なので、
+#     どちらもこの画面に並べる対象ではない。
+#
+# なぜ定数にまとめるのか:
+#     この判定は一覧（GET /api/admin/users）・詳細（GET /api/admin/users/{user_id}）・
+#     社員別チャット（POST /api/chat/staff-inquiry）の3箇所に現れる。
+#     それぞれに「ceo か admin か」を書くと、次にロールが増えたときに
+#     直し漏れた箇所だけが一覧に出ない人を通してしまう。
+#     ロール名の定義元であるこのファイルに1つ置き、3箇所から参照する。
+STAFF_LIST_EXCLUDED_ROLES = frozenset({ROLE_CEO, ROLE_ADMIN})
+
 
 def create_access_token(user_id: str, role: str) -> str:
     """JWTアクセストークンを生成する"""

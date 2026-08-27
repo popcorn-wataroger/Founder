@@ -16,8 +16,13 @@ from app.chat_history import (
     get_sessions,
 )
 from app.rag import answer_question, answer_question_stream
-from app.routers.auth_router import ROLE_CEO, require_business_user, require_ceo
-from app.users import format_user_profile, get_user_by_id
+from app.routers.auth_router import (
+    ROLE_CEO,
+    STAFF_LIST_EXCLUDED_ROLES,
+    require_business_user,
+    require_ceo,
+)
+from app.users import format_user_profile, get_user_by_id, resolve_role
 
 # チャット関連のAPIをまとめるルーター。URLは /api/chat から始まる
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -411,16 +416,31 @@ async def staff_inquiry_stream(req: StaffInquiryRequest, token: dict = Depends(r
         黙って通すと、対象の個別ソースが1件も無いまま共通ソースだけで回答が作られる。
         社長には普通の回答に見えてしまい、user_id の間違いに気づけない。
         GET /api/admin/users/{user_id}（PR #53）と同じく、
-        管理者本人のIDも「スタッフ一覧に出ない人」として404で揃える。
+        「スタッフ一覧に出ない人」（STAFF_LIST_EXCLUDED_ROLES＝ceo / admin）も
+        404で揃える。この画面から質問できる相手は、
+        スタッフ一覧に並んでいる社員だけにする。
+        admin を含めるのは、アカウント管理だけを担当して業務データを持たない役割だから。
+        個別ソースもトークも持たないので、聞いても共通ソースだけの回答しか返らない。
+
+    実効ロール（resolve_role）で判定する理由:
+        以前は users.csv の role を直接見ていたため、
+        DBでロールを変更した社員がこの経路だけ素通りしていた。
+        （CSVで employee の人をDBで ceo にしても、ここでは employee のまま見えるので
+        404にならず、スタッフ一覧に出ない人について質問できてしまう）
+        一覧・詳細と同じ resolve_role の結果で判定して、3箇所の見え方を揃える。
     """
     # 1. 前後の空白を除いて、質問が実質空でないか確認する
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="質問を入力してください")
 
-    # 2. 対象の社員が実在するかを確認する（存在しないIDや社長自身は404）
+    # 2. 対象の社員が実在するかを確認する
+    #    （存在しないID・社長自身・システム管理者は404）
+    #
+    #    ロールはCSVの値ではなく resolve_role の結果（実効ロール）で見る。
+    #    CSVの role を直接見ると、DBでロールを変更した社員がここだけ素通りする
     target_user = get_user_by_id(req.target_user_id)
-    if target_user is None or target_user["role"] == ROLE_CEO:
+    if target_user is None or resolve_role(target_user) in STAFF_LIST_EXCLUDED_ROLES:
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
     # 3. どのセッションに記録するかを決める（持ち主は必ずトークンの user_id ＝ 社長）
