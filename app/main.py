@@ -297,6 +297,72 @@ def _reject_invalid_password(password: str) -> None:
         raise HTTPException(status_code=400, detail=message)
 
 
+@app.get("/api/admin/accounts")
+async def get_admin_accounts(
+    token: dict = Depends(require_account_manager),
+) -> list[dict[str, str]]:
+    """アカウント管理用の社員一覧を返す（システム管理者専用）。
+
+    入力:
+        token … require_account_manager が返すログイン情報
+                （システム管理者でなければ403で弾かれている）
+
+    出力:
+        1人につき {user_id, employee_code, name, role} を持つ辞書のリスト。
+        並び順は get_all_users() のまま（user_id の文字列順）
+
+    処理:
+        全社員を取り出し、1人ずつ実効ロールを解決して、画面に出す4項目だけを詰め直す。
+
+    なぜ GET /api/admin/users と別に作るのか（重要）:
+        あちらは社長のスタッフ一覧で、require_ceo・
+        STAFF_LIST_EXCLUDED_ROLES（ceo / admin）による除外つき・role を返さない。
+        アカウント管理の画面は admin が開き、社長やシステム管理者自身の
+        パスワードも上書きできる必要があり、ロールも表示する。
+        条件が3つとも違うため、1本のAPIに兼ねると
+        「呼び出し元によって除外する／しない」を引数で切り替えることになり、
+        切り替えを1つ間違えるだけで社長のスタッフ一覧に admin が並ぶ。
+        用途ごとに分けておけば、片方を変えてももう片方は動かない。
+
+    なぜ誰も除外しないのか:
+        アカウントの管理は全員が対象。ceo と admin を外すと、
+        その2人のパスワードだけ画面から復旧できなくなる。
+        スタッフ一覧が2人を外すのは「業務上の社員を並べる画面」だからで、
+        こちらとは目的が違う。
+
+    なぜ role が実効ロールなのか:
+        users.role は初期値で、運用中の変更は user_roles に積まれる。
+        素の値を返すと、ロールを変更した社員が画面上は元のロールのままに見え、
+        「変更したのに反映されていない」と受け取られる。
+
+    パスワードを返さない理由:
+        users テーブルには password 列がある。行をそのまま返すと
+        平文がAPIレスポンスに乗る。返す項目を1つずつ書き出しておけば、
+        将来テーブルに列が増えても、書き出していない列は外に出ない。
+
+    resolve_role() を1人ずつ呼んでいることについて（Issue #127）:
+        resolve_role() は内部で user_roles をDBから引くため、
+        社員100人ならDB接続が100回開く。
+        既存の get_admin_users() も同じ書き方で、同じ問題を持っている。
+        まとめて取得する仕組み（user_roles を1回で引いて辞書にする等）は
+        Issue #127 で両方まとめて直す。ここで片方だけ先に直すと、
+        同じ処理の書き方が2つに分かれ、#127 の作業が増えるため、
+        いまは既存に揃えることを優先している。
+    """
+    accounts = []
+    for user in get_all_users():
+        accounts.append(
+            {
+                "user_id": user["user_id"],
+                "employee_code": user["employee_code"],
+                "name": user["name"],
+                # 素の users.role ではなく、user_roles の上書きを優先した実効ロール
+                "role": resolve_role(user),
+            }
+        )
+    return accounts
+
+
 class AccountCreateRequest(BaseModel):
     employee_code: str
     name: str
