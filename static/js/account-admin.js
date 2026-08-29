@@ -153,8 +153,14 @@ async function loadAccounts() {
 
   try {
     const res = await fetch("/api/admin/accounts", { headers: accountAuthHeaders() });
-    if (!res.ok) throw new Error("一覧の取得に失敗しました");
-    const accounts = await res.json();
+    const accounts = await parseJsonOrNull(res);
+    if (!res.ok) {
+      // サーバーが detail を返していればその文言を、
+      // 返していない（HTMLが返ってきた等）なら定型文を出す
+      throw new ApiError((accounts && accounts.detail) || "一覧の取得に失敗しました");
+    }
+    // 200 なのに本文がJSONでない場合（プロキシがHTMLを返した等）もここで止める
+    if (!Array.isArray(accounts)) throw new ApiError("一覧の取得に失敗しました");
 
     // 待っている間に新しいリクエストが始まっていたら、この結果は捨てる
     if (requestId !== accountListRequestId) return;
@@ -173,7 +179,7 @@ async function loadAccounts() {
     // 失敗の表示も同じ理由で、最新のリクエストのときだけ出す
     if (requestId !== accountListRequestId) return;
     tbody.textContent = "";
-    setAccountStatus("account-list-status", e.message, "error");
+    setAccountStatus("account-list-status", toDisplayMessage(e), "error");
   }
 }
 
@@ -296,8 +302,10 @@ async function createAccount() {
         password: passwordInput.value,
       }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "アカウントの追加に失敗しました");
+    const data = await parseJsonOrNull(res);
+    if (!res.ok || !data) {
+      throw new ApiError((data && data.detail) || "アカウントの追加に失敗しました");
+    }
 
     if (!isSameLoginGeneration(generation)) return;
 
@@ -318,7 +326,7 @@ async function createAccount() {
     loadAccounts();
   } catch (e) {
     if (!isSameLoginGeneration(generation)) return;
-    setAccountStatus("account-create-status", e.message, "error");
+    setAccountStatus("account-create-status", toDisplayMessage(e), "error");
   } finally {
     // 成功・失敗のどちらでも必ず解放する。
     //
@@ -437,8 +445,10 @@ async function resetAccountPassword() {
         body: JSON.stringify({ new_password: passwordInput.value }),
       }
     );
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "パスワードの上書きに失敗しました");
+    const data = await parseJsonOrNull(res);
+    if (!res.ok) {
+      throw new ApiError((data && data.detail) || "パスワードの上書きに失敗しました");
+    }
 
     if (!isSameLoginGeneration(generation)) return;
 
@@ -456,7 +466,7 @@ async function resetAccountPassword() {
     setAccountStatus("account-reset-status", message, "success");
   } catch (e) {
     if (!isSameLoginGeneration(generation)) return;
-    setAccountStatus("account-reset-status", e.message, "error");
+    setAccountStatus("account-reset-status", toDisplayMessage(e), "error");
   } finally {
     // 成功・失敗のどちらでも必ず解放する。
     //

@@ -104,11 +104,47 @@ def test_社長とシステム管理者も含まれる(client: TestClient, temp_
     assert ADMIN[1] in 社員コード一覧
 
 
-def test_並び順はuser_idの文字列順(client: TestClient, temp_db: None) -> None:
-    """get_all_users() の順をそのまま返していることを固定する。"""
+def test_並び順はuser_idの数値順(client: TestClient, temp_db: None) -> None:
+    """get_all_users() の順をそのまま返していることを固定する。
+
+    key=int を指定している理由:
+        user_id は TEXT だが、並びは数値順であることを確かめたい。
+        key を付けずに sorted() すると文字列順（1, 10, 2 …）と比べることになり、
+        10人以上いる状態でこのテストが逆に失敗する。
+    """
     user_id一覧 = [件["user_id"] for 件 in _get_accounts(client)]
 
-    assert user_id一覧 == sorted(user_id一覧)
+    assert user_id一覧 == sorted(user_id一覧, key=int)
+
+
+def test_10人目を追加しても数値順のまま(client: TestClient, temp_db: None) -> None:
+    """今回の並び順の修正が効いているかを、実際に確かめられる唯一のテスト。
+
+    なぜアカウントを追加するのか（重要）:
+        data/users.csv の9人は user_id が1桁しかないため、
+        文字列順で並べても数値順で並べても結果が同じになる。
+        つまり9人のままでは、ORDER BY を元の user_id に戻しても
+        テストは通ってしまい、修正を守れない。
+        user_id が "10" の行を作って初めて、
+        文字列順（"10" が "2" の前に来る）との違いが出る。
+    """
+    追加 = client.post(
+        "/api/admin/accounts",
+        json={
+            "employee_code": "EMP008",
+            "name": "新入社員",
+            "role": ROLE_EMPLOYEE,
+            "password": "newpassword",
+        },
+        headers=_admin_headers(),
+    )
+    assert 追加.status_code == 200, 追加.text
+    assert 追加.json()["user_id"] == "10"
+
+    user_id一覧 = [件["user_id"] for 件 in _get_accounts(client)]
+
+    # 末尾が "10" であること。文字列順なら "10" は "2" の前（先頭から2番目）に来る
+    assert user_id一覧 == ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 
 
 # --- B. role が実効ロールであること --------------------------------------------------

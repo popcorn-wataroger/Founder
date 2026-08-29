@@ -1393,6 +1393,9 @@ button.sidebar-user:focus-visible {
 </div>
 
 <script src="/static/js/session.js"></script>
+<!-- api.js は account-admin.js / password-change.js より前に読み込む
+     （両方が ApiError / parseJsonOrNull / toDisplayMessage を使う） -->
+<script src="/static/js/api.js"></script>
 <script src="/static/js/login.js"></script>
 <script src="/static/js/chat.js"></script>
 <script src="/static/js/admin.js"></script>

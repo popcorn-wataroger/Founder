@@ -139,8 +139,12 @@ async function changeMyPassword() {
         new_password: newPassword,
       }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "パスワードの変更に失敗しました");
+    const data = await parseJsonOrNull(res);
+    if (!res.ok) {
+      // サーバーが detail を返していればその文言を、
+      // 返していない（HTMLが返ってきた等）なら定型文を出す
+      throw new ApiError((data && data.detail) || "パスワードの変更に失敗しました");
+    }
 
     if (!isSameLoginGeneration(generation)) return;
 
@@ -151,7 +155,7 @@ async function changeMyPassword() {
     newInput.value = "";
   } catch (e) {
     if (!isSameLoginGeneration(generation)) return;
-    setPasswordChangeStatus(e.message, "error");
+    setPasswordChangeStatus(toDisplayMessage(e), "error");
   } finally {
     // 成功・失敗のどちらでも必ず解放する。
     //

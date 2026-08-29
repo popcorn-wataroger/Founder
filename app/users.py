@@ -135,13 +135,37 @@ def get_all_users() -> list[dict]:
         呼ばれるたびにDBを見る関数にしておけば、常にその時点の内容になる。
 
     並び順について:
-        user_id は TEXT のため、並びは文字列としての順序になる。
-        現在の社員は user_id が1桁（1〜9）なので data/users.csv と同じ並びになるが、
-        10人目以降が増えると 1, 10, 2 … の順になる。
-        画面からアカウントを作れるようになる段階で、採番と並び順をまとめて決める。
+        数字だけの user_id は数値として比較し、1, 2, … 9, 10, 11 の順に並べる。
+
+        単純な ORDER BY user_id にしない理由:
+            user_id は TEXT なので、そのまま並べると文字列としての順序になり、
+            10人目以降が 1, 10, 11, 2, 3 … の順に出る。
+            アカウントを追加すると user_id が "10" になるため、
+            追加した人が一覧の2番目に現れて探しにくい。
+
+        ORDER BY user_id::bigint と直接書かない理由（重要）:
+            user_id は TEXT 列なので、DBとしては数字以外も入りうる
+            （data/users.csv を書き換えて初期投入する経路が残っている）。
+            数字でない値が1行でもあると変換が失敗し、
+            この関数を使うアカウント管理画面が一覧ごと500になる。
+            あの画面はパスワード復旧の唯一の導線なので、
+            並び順のための変更で機能全体が落ちる作りにはしない。
+            数字だけを数値として扱い、それ以外は末尾へ回す。
+
+            app/database.py の _sync_user_id_sequence() が
+            同じ正規表現で数字だけを対象にしているのと揃えてある。
+
+        bigint にしている理由:
+            採番のシーケンスを BIGINT で作っている（app/database.py）。
+            ここだけ integer にすると型が揃わない。
     """
     with closing(get_connection()) as conn:
-        rows = conn.execute("SELECT * FROM users ORDER BY user_id").fetchall()
+        rows = conn.execute("""
+            SELECT * FROM users
+            ORDER BY
+                CASE WHEN user_id ~ '^[0-9]+$' THEN user_id::bigint END NULLS LAST,
+                user_id
+        """).fetchall()
 
     return [dict(row) for row in rows]
 
