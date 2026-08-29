@@ -54,6 +54,20 @@ from app.database import get_connection
 # （古いバージョンのように黙って切り捨てられることはない）。
 MAX_PASSWORD_BYTES = 72
 
+# アカウント追加のときに要求するパスワードの最短の長さ（文字数）。
+#
+# ここに置く理由:
+#     パスワードについての決まりごとを MAX_PASSWORD_BYTES と同じ場所にまとめる。
+#     使う側（app/main.py のアカウント追加API）に 8 と直接書くと、
+#     あとでログインAPIや変更APIにも同じ規則を足すときに数字が散って、
+#     片方だけ直す事故が起きる。
+#
+# バイト数ではなく文字数で数える理由:
+#     短さの制限は「推測されにくいか」の話なので、
+#     日本語1文字を3バイトと数えて甘くしたくない。
+#     長さの上限(MAX_PASSWORD_BYTES)だけは bcrypt の仕様に合わせてバイトで数える。
+MIN_PASSWORD_LENGTH = 8
+
 
 def hash_password(password: str) -> str:
     """パスワードをハッシュ化した文字列を返す。

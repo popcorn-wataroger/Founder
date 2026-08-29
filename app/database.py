@@ -52,6 +52,35 @@ USER_COLUMNS: tuple[str, ...] = (
     "last_login_at",
 )
 
+# user_id を採番するシーケンスの名前。
+#
+# なぜシーケンスで採番するか（重要）:
+#     アカウント追加が2件同時に来ても、同じ user_id を2人に渡さないため。
+#     nextval() は「今の値を1つ進めて返す」をDB側でアトミックに行い、
+#     しかもトランザクションの外側で進む。そのため、同時に呼ばれても
+#     同じ値が2回返ることがない。アプリ側でロックを書く必要もない。
+#
+#     「SELECT MAX(user_id) + 1」方式にしなかった理由:
+#         同時に実行すると両方が同じ MAX を読み、片方が主キー違反で落ちる。
+#         「同じ番号にならない」こと自体は主キー制約が守ってくれるが、
+#         守り方が「片方を失敗させる」なので、リトライを自前で書くことになる。
+#
+#     user_id を IDENTITY 列にしなかった理由:
+#         user_id は TEXT で、user_logins / sources.owner_user_id / JWT の中身が
+#         すべて文字列として扱っている。型を変えると影響がこの段階の外まで広がる。
+USER_ID_SEQUENCE = "users_user_id_seq"
+
+# employee_code の一意制約の名前。
+#
+# 明示的に名前を付ける理由:
+#     アカウント追加が一意制約違反で失敗したとき、
+#     それが「社員コードの重複」なのか「user_id の重複」なのかを
+#     app/users.py が名前で見分ける。名前を PostgreSQL の既定に任せると、
+#     どの名前が付くかがこのコードから読み取れなくなる。
+#     なお既定の名前も users_employee_code_key なので、
+#     この宣言を足す前に作られたテーブルとも一致する。
+USERS_EMPLOYEE_CODE_UNIQUE = "users_employee_code_key"
+
 
 def get_connection() -> psycopg.Connection[dict[str, Any]]:
     """PostgreSQLへの接続を返す。
@@ -86,10 +115,11 @@ def init_db() -> None:
     処理: with closing(get_connection()) as conn: で接続し、7テーブル
           （users / sources / chat_sessions / chat_messages / user_logins /
           user_roles / user_passwords）を
-          CREATE TABLE IF NOT EXISTS で作り、commit して確定する
+          CREATE TABLE IF NOT EXISTS で作り、user_id 採番用のシーケンスも作って
+          commit して確定する
           （commit は with ブロックの内側で行い、close は with を抜けるときに任せる）。
-          そのあと _seed_users_from_csv() を呼び、users が空なら
-          data/users.csv の内容を投入する
+          そのあと seed_users_if_empty() を呼び、users が空なら
+          data/users.csv の内容を投入して、採番の現在値を合わせる
     出力: なし（副作用としてテーブルが作られ、初回だけ社員マスタが入る）
     例外: DATABASE_URL が未設定・空のとき RuntimeError（get_connection が投げる）
 
@@ -118,7 +148,8 @@ def init_db() -> None:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id         TEXT PRIMARY KEY,
-                employee_code   TEXT NOT NULL UNIQUE,
+                employee_code   TEXT NOT NULL
+                                CONSTRAINT users_employee_code_key UNIQUE,
                 name            TEXT NOT NULL,
                 department      TEXT NOT NULL DEFAULT '',
                 gender          TEXT NOT NULL DEFAULT '',
@@ -193,23 +224,26 @@ def init_db() -> None:
                 updated_at    TEXT NOT NULL
             )
         """)
+        # user_id の採番用。値の合わせ方は _sync_user_id_sequence() を参照。
+        # IF NOT EXISTS なので、既にあるDBで起動しても現在値は動かない
+        conn.execute(f"CREATE SEQUENCE IF NOT EXISTS {USER_ID_SEQUENCE} AS BIGINT")
         conn.commit()
 
-        # テーブルが揃ってから社員マスタを入れる（初回だけ）
-        _seed_users_from_csv(conn)
+    # テーブルが揃ってから社員マスタを入れる（初回だけ）。
+    # 接続を分けているのは、この関数をテストの準備からも単体で呼べるようにするため
+    seed_users_if_empty()
 
 
-def _seed_users_from_csv(conn: psycopg.Connection[dict[str, Any]]) -> None:
-    """users テーブルが空のときだけ、data/users.csv の内容を投入する。
+def seed_users_if_empty() -> None:
+    """users テーブルが空なら data/users.csv の内容を投入し、採番の現在値を合わせ直す。
 
-    入力:
-        conn … init_db() が開いている接続（このためだけに接続を開き直さない）
+    入力: なし（接続先は get_connection 経由で DATABASE_URL から決まる）
 
     処理:
         1. users の行数を数える
-        2. 1行でもあれば何もせずに戻る（既にあるデータを一切触らない）
-        3. 空なら data/users.csv を1行ずつ読み、users へ INSERT する
-        4. commit して確定する
+        2. 空なら data/users.csv を1行ずつ読み、users へ INSERT して commit する
+           （1行でもあれば投入は飛ばす。既にあるデータを一切触らない）
+        3. どちらの場合も _sync_user_id_sequence() で採番の現在値を合わせる
 
     出力:
         なし（副作用として、初回だけ社員マスタの行が入る）
@@ -222,6 +256,12 @@ def _seed_users_from_csv(conn: psycopg.Connection[dict[str, Any]]) -> None:
         user_roles / user_passwords が「変更はDBに積み、元の値は既定値として使う」
         としているのと同じ考え方。
 
+    なぜ init_db() の内側の private 関数ではなく、公開関数にしたか:
+        テストが users テーブルを空にしたあと（tests/conftest.py の temp_db）、
+        社員マスタだけを入れ直すために単体で呼べる必要があるため。
+        呼び出し側で接続を用意させると使う側の手数が増えるので、
+        接続はこの関数の中で開いて閉じる。
+
     ON CONFLICT DO NOTHING を付けている理由:
         Cloud Run はインスタンスを複数同時に立ち上げることがある。
         2つのインスタンスが同時に「空だ」と判断すると、同じ行を2回入れようとして
@@ -233,25 +273,83 @@ def _seed_users_from_csv(conn: psycopg.Connection[dict[str, Any]]) -> None:
         None が入るため、そのときも空文字に寄せる。
         NULL を入れないのは、社員データAPIの応答を今までと同じ形に保つため。
     """
-    row = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()
-    existing_count = row["count"] if row else 0
+    with closing(get_connection()) as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()
+        existing_count = row["count"] if row else 0
 
-    # 1行でもあれば初期投入は済んでいる。運用中のデータを上書きしない
-    if existing_count > 0:
-        return
+        # 1行も無いときだけCSVを流し込む（運用中のデータは上書きしない）
+        if existing_count == 0:
+            with open(USERS_CSV_PATH, encoding="utf-8") as f:
+                csv_rows = list(csv.DictReader(f))
 
-    with open(USERS_CSV_PATH, encoding="utf-8") as f:
-        csv_rows = list(csv.DictReader(f))
+            # 列名も値の並びも USER_COLUMNS ひとつから組み立てる（書き下しの食い違いを防ぐ）。
+            # SQL文に埋め込むのはこのファイルが持つ定数の列名だけで、
+            # CSV由来の値は必ず %s プレースホルダでバインドする（文字列連結しない）
+            column_list = ", ".join(USER_COLUMNS)
+            placeholders = ", ".join(["%s"] * len(USER_COLUMNS))
+            insert_sql = (
+                f"INSERT INTO users ({column_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+            )
 
-    # 列名も値の並びも USER_COLUMNS ひとつから組み立てる（書き下しの食い違いを防ぐ）。
-    # SQL文に埋め込むのはこのファイルが持つ定数の列名だけで、
-    # CSV由来の値は必ず %s プレースホルダでバインドする（文字列連結しない）
-    column_list = ", ".join(USER_COLUMNS)
-    placeholders = ", ".join(["%s"] * len(USER_COLUMNS))
-    insert_sql = f"INSERT INTO users ({column_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+            for csv_row in csv_rows:
+                values = tuple(csv_row.get(column) or "" for column in USER_COLUMNS)
+                conn.execute(insert_sql, values)
 
-    for csv_row in csv_rows:
-        values = tuple(csv_row.get(column) or "" for column in USER_COLUMNS)
-        conn.execute(insert_sql, values)
+            conn.commit()
 
-    conn.commit()
+        # 投入の有無にかかわらず、採番の現在値を今の中身に合わせる
+        _sync_user_id_sequence(conn)
+        conn.commit()
+
+
+def _sync_user_id_sequence(conn: psycopg.Connection[dict[str, Any]]) -> None:
+    """user_id の採番シーケンスを「users の最大値の次」に合わせる。
+
+    入力:
+        conn … seed_users_if_empty() が開いている接続
+
+    処理:
+        users にある数字だけの user_id の最大値を調べ、
+        次の nextval() がその +1 を返すようにシーケンスを設定する。
+        1件も無ければ次の nextval() は 1 を返す。
+
+    出力:
+        なし（副作用としてシーケンスの現在値が変わる）
+
+    なぜ必要か:
+        シーケンスは CREATE した直後、1 から数え始める。
+        既に user_id が 1〜9 の社員が居るDBでそのまま nextval() を使うと
+        1 が返り、主キー違反でアカウント追加が必ず失敗する。
+        起動のたびに現在の中身へ合わせておけば、その食い違いが起きない。
+
+    setval の第3引数に false を渡している理由:
+        false は「この値をまだ配っていない」という意味で、
+        次の nextval() が渡した値そのものを返す。
+        MAX が 9 なら 10 を渡して次が 10、1件も無ければ 1 を渡して次が 1 になる。
+        true にすると「渡した値は配り済み」となり、その次から配られるため、
+        件数が0のときに 0 を渡せずシーケンスの最小値(1)を割ってしまう。
+
+    GREATEST で「進んだ値を下げない」ようにしていない理由:
+        下げても衝突しないため。シーケンスだけが進んで users に行が無い状態は、
+        採番したあとの INSERT が失敗して取り消されたときにできる欠番であり、
+        その番号を持つ社員は存在しない。次に配り直しても重複にならない。
+        巻き戻さない作りにすると、テストのたびに採番が進んで
+        「追加したアカウントの user_id」が実行順で変わり、テストが読みにくくなる。
+
+    数字だけを対象にしている理由:
+        user_id は TEXT なので、将来 UUID のような値が混ざると
+        整数への変換(::int)が失敗して起動できなくなる。
+        正規表現で数字だけの行に絞り、変換できる値だけを見る。
+    """
+    conn.execute(
+        f"""
+        SELECT setval(
+            '{USER_ID_SEQUENCE}',
+            COALESCE(
+                (SELECT MAX(user_id::bigint) FROM users WHERE user_id ~ '^[0-9]+$'),
+                0
+            ) + 1,
+            false
+        )
+        """
+    )

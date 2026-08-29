@@ -1,6 +1,14 @@
 from contextlib import closing
 
-from app.database import USERS_CSV_PATH, get_connection
+import psycopg
+
+from app.database import (
+    USER_COLUMNS,
+    USER_ID_SEQUENCE,
+    USERS_CSV_PATH,
+    USERS_EMPLOYEE_CODE_UNIQUE,
+    get_connection,
+)
 from app.user_roles import get_role
 
 # このモジュールが外部へ公開する名前。
@@ -15,13 +23,36 @@ from app.user_roles import get_role
 #     これまでの使い方（tests/test_last_login.py など）をそのまま残すため。
 __all__ = [
     "USERS_CSV_PATH",
+    "EmployeeCodeAlreadyExistsError",
     "get_user_by_employee_code",
     "get_user_by_id",
     "get_all_users",
+    "next_user_id",
+    "create_user",
     "resolve_role",
     "format_user_profile",
     "PROFILE_FIELD_LABELS",
 ]
+
+
+class EmployeeCodeAlreadyExistsError(Exception):
+    """登録しようとした社員コードが既に使われているときに送出する例外。
+
+    なぜ専用の例外クラスを作るか:
+        create_user() が失敗する理由は「社員コードの重複」だけではない
+        （接続断など、psycopg が投げる例外は他にもある）。
+        呼び出し元（app/main.py のアカウント追加API）は
+        重複のときだけ409を返し、それ以外はそのまま500にしたい。
+        重複だけを名前の付いた例外にしておけば、except で1つだけ拾えばよく、
+        エラーメッセージの文字列を見て分岐するような壊れやすい判定を書かずに済む。
+
+    属性:
+        employee_code … 重複した社員コード。呼び出し元が応答メッセージに使う
+    """
+
+    def __init__(self, employee_code: str) -> None:
+        super().__init__(f"社員コード {employee_code} は既に使われています")
+        self.employee_code = employee_code
 
 
 def get_user_by_employee_code(employee_code: str) -> dict | None:
@@ -113,6 +144,118 @@ def get_all_users() -> list[dict]:
         rows = conn.execute("SELECT * FROM users ORDER BY user_id").fetchall()
 
     return [dict(row) for row in rows]
+
+
+def next_user_id() -> str:
+    """新しい社員に振る user_id を1つ取り出す。
+
+    入力: なし
+    処理: users_user_id_seq シーケンスを1つ進め、その値を文字列にする
+    出力: まだ誰にも使われていない user_id（例: "10"）
+
+    なぜシーケンスから取るのか（重要）:
+        アカウント追加が2件同時に来ても、同じ番号を2人に渡さないため。
+        nextval() は値を進めて返すところまでをDB側でアトミックに行うので、
+        「2人が同じ値を読む」という状態自体が起こらない。
+        SELECT MAX(user_id) + 1 で決めると、同時に読んだ2人が同じ番号になり、
+        あとから入れた方が主キー違反で失敗する。
+
+    なぜ文字列にするのか:
+        user_id 列は TEXT で、JWT・URLパス・他テーブル（user_logins など）でも
+        文字列として扱っている。ここで型を変えると比較が食い違う。
+
+    採番だけを取り出しても行は増えない:
+        この関数は番号を配るだけで、users には何も書かない。
+        取ったあとに INSERT が失敗すると、その番号は欠番になる。
+        欠番が出ても困らない（連番であることに意味を持たせていない）ので、
+        取り消しの仕組みは持たない。
+    """
+    with closing(get_connection()) as conn:
+        row = conn.execute(f"SELECT nextval('{USER_ID_SEQUENCE}') AS user_id").fetchone()
+        conn.commit()
+
+    # nextval は必ず1行返る。返らなければDB側の異常なので、そのまま例外にする
+    if row is None:
+        raise RuntimeError("user_id の採番に失敗しました")
+
+    return str(row["user_id"])
+
+
+def create_user(employee_code: str, name: str, role: str, user_id: str) -> None:
+    """社員マスタに1行追加する。
+
+    入力:
+        employee_code … 新しい社員の社員コード（ログインに使う。全社で一意）
+        name          … 氏名
+        role          … ロール名（employee / source_manager / ceo / admin）
+        user_id       … 振る user_id。next_user_id() で取った値を渡す
+
+    処理:
+        users へ1行 INSERT する。指定のない列（部署・生年月日・家族構成など）は
+        すべて空文字で入れる。
+
+    出力:
+        なし（副作用として users の行が1つ増える）
+
+    例外:
+        EmployeeCodeAlreadyExistsError … employee_code が既に使われているとき
+
+    password 列を空文字で入れる理由（重要）:
+        パスワードは user_passwords テーブルにハッシュで持つ（app/user_passwords.py）。
+        users.password は data/users.csv から引き継いだ移行用の列で、
+        ハッシュがまだ無い社員のログインにだけ使われる。
+        新しいアカウントは最初からハッシュを持つので、この列に値を入れる理由がない。
+        空文字にしておけば、万一ハッシュの保存に失敗しても
+        平文の照合が「空文字と入力の一致」になり、誰もログインできない
+        （ログインAPIは空のパスワードを400で弾くため、空同士の一致も起こらない）。
+
+    ロール名をここで検証しない理由:
+        妥当なロール名かどうかは呼び出し元（APIの入口）が決める。
+        set_role() と同じ方針で、この関数は渡された値をそのまま保存する。
+        検証を両方に置くと、許すロールが増えたときの直し忘れが起きる。
+
+    重複を「先に SELECT で確かめる」形にしない理由（重要）:
+        SELECT と INSERT の間に別のリクエストが同じ社員コードを入れると、
+        確認をすり抜けて重複した行ができる。
+        判定はDBの一意制約1つに任せ、違反を捕まえて例外に変える。
+        こうすれば、同時に何件来ても「先に入った1件だけが成功する」が必ず成り立つ。
+
+    どの一意制約に違反したかを見分ける理由:
+        users には user_id（主キー）と employee_code の2つの一意制約がある。
+        どちらでも同じ例外（UniqueViolation）が飛ぶため、
+        制約の名前を見ないと user_id の重複まで「社員コードの重複」として
+        409 で返してしまう。名前が employee_code の側でなければそのまま投げ直し、
+        想定外の失敗を500として表に出す。
+
+    セキュリティ:
+        employee_code / name / role / user_id はいずれもリクエスト由来になりうるので、
+        必ず %s プレースホルダでバインドする（SQL文に文字列連結しない）。
+    """
+    # 指定のあった列だけを埋め、残りは空文字にする。
+    # 列の並びは USER_COLUMNS ひとつから作るので、列が増えても書き漏らしが起きない
+    values_by_column = {
+        "user_id": user_id,
+        "employee_code": employee_code,
+        "name": name,
+        "role": role,
+    }
+    column_list = ", ".join(USER_COLUMNS)
+    placeholders = ", ".join(["%s"] * len(USER_COLUMNS))
+    values = tuple(values_by_column.get(column, "") for column in USER_COLUMNS)
+
+    with closing(get_connection()) as conn:
+        try:
+            conn.execute(
+                f"INSERT INTO users ({column_list}) VALUES ({placeholders})",
+                values,
+            )
+        except psycopg.errors.UniqueViolation as error:
+            # 社員コードの重複だけを、呼び出し元が扱える例外に翻訳する。
+            # それ以外の一意制約違反（user_id の重複など）は想定外なのでそのまま投げ直す
+            if error.diag.constraint_name == USERS_EMPLOYEE_CODE_UNIQUE:
+                raise EmployeeCodeAlreadyExistsError(employee_code) from error
+            raise
+        conn.commit()
 
 
 def resolve_role(user: dict) -> str:

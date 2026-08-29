@@ -7,10 +7,23 @@ from pydantic import BaseModel
 
 from app.database import init_db
 from app.routers import auth_router, chat_router, sources_router
-from app.routers.auth_router import STAFF_LIST_EXCLUDED_ROLES, VALID_ROLES, require_ceo
+from app.routers.auth_router import (
+    STAFF_LIST_EXCLUDED_ROLES,
+    VALID_ROLES,
+    require_account_manager,
+    require_ceo,
+)
 from app.user_logins import get_last_login_at
+from app.user_passwords import MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH, set_password
 from app.user_roles import set_role
-from app.users import get_all_users, get_user_by_id, resolve_role
+from app.users import (
+    EmployeeCodeAlreadyExistsError,
+    create_user,
+    get_all_users,
+    get_user_by_id,
+    next_user_id,
+    resolve_role,
+)
 
 
 @asynccontextmanager
@@ -248,6 +261,126 @@ async def update_admin_user_role(
     set_role(user_id, req.role, updated_by=token["user_id"])
 
     return {"success": True, "user_id": user_id, "role": req.role}
+
+
+class AccountCreateRequest(BaseModel):
+    employee_code: str
+    name: str
+    role: str
+    password: str
+
+
+@app.post("/api/admin/accounts")
+async def create_account(
+    req: AccountCreateRequest, token: dict = Depends(require_account_manager)
+) -> dict[str, object]:
+    """新しいアカウントを1つ追加する（システム管理者専用）。
+
+    入力:
+        req … リクエストボディ（AccountCreateRequest）
+            employee_code … 社員コード（ログインに使う。全社で一意）
+            name          … 氏名
+            role          … ロール名（employee / source_manager / ceo / admin）
+            password      … 初期パスワード
+        token … require_account_manager が返すログイン情報
+                （システム管理者でなければ403で弾かれている）
+
+    出力:
+        {"success": True, "user_id": 振られたuser_id, "employee_code": …, "role": …}
+
+    処理:
+        1. 社員コードと氏名が空でないか確かめる（400）
+        2. role が妥当な値か検証する（VALID_ROLES に無ければ400）
+        3. パスワードの長さを検証する（短すぎる／長すぎるなら400）
+        4. next_user_id() で user_id を採番する
+        5. create_user() で users に1行入れる（社員コードが重複していれば409）
+        6. set_password() で初期パスワードをハッシュにして保存する
+
+    エラー:
+        400 … 社員コード・氏名が空／知らないロール名／パスワードの長さが規定外
+        403 … システム管理者以外が叩いた場合（require_account_manager が投げる）
+        409 … 社員コードが既に使われている場合
+
+    権限について:
+        require_account_manager を付けているので、社員・共通ソース管理者・社長は403になる。
+        アカウントの追加はシステム管理者(admin)だけの仕事として
+        app/routers/auth_router.py の can_manage_accounts() に集約されている。
+        社長(ceo)も弾かれるのは、CLAUDE.md の権限表どおりの姿。
+
+    なぜ検証を先にまとめて済ませるか（重要）:
+        users への INSERT（create_user）と user_passwords への保存（set_password）は
+        別々のトランザクションで、まとめて取り消す仕組みを持っていない。
+        後半で弾かれると「行はあるがパスワードが無いアカウント」が残る。
+        値の検証を全部先に通しておけば、書き込みが始まったあとに
+        自分から失敗する経路が無くなる。
+
+    それでも set_password が失敗したらどうなるか:
+        users に行だけが残る。そのアカウントはログインできない
+        （users.password は空文字で、ログインAPIは空のパスワードを400で弾くため、
+        平文フォールバックでも一致しない）。
+        入れないより中途半端に見えるが、「入れた覚えのないパスワードで入れてしまう」
+        よりは安全側なので、この段階ではこの状態を許容する。
+        作り直しは同じ社員コードで409になるため、
+        取り消し方（アカウント削除）は後続のIssueで扱う。
+
+    なぜ前後の空白を取り除くか:
+        画面やコピー&ペーストで社員コードの末尾に空白が紛れることがある。
+        そのまま保存すると、見た目が同じなのにログインでは一致しない
+        アカウントができあがり、原因が非常に分かりにくい。
+    """
+    employee_code = req.employee_code.strip()
+    name = req.name.strip()
+
+    # 1. 空のまま作らせない。空の社員コードでは誰もログインできない
+    if not employee_code or not name:
+        raise HTTPException(status_code=400, detail="社員コードと氏名は必須です")
+
+    # 2. 知らないロール名を保存させない。
+    #    ここを通すと、権限判定が知らない値を持った社員ができてしまう
+    #    （ロール名の定義は auth_router に集約している。ここでは持たない）
+    if req.role not in VALID_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role は {' / '.join(sorted(VALID_ROLES))} のいずれかを指定してください",
+        )
+
+    # 3. パスワードの長さ。短すぎるものは推測されやすく、
+    #    長すぎるものは bcrypt が扱えない（hash_password が ValueError になる）
+    if len(req.password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"パスワードは{MIN_PASSWORD_LENGTH}文字以上にしてください",
+        )
+    if len(req.password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"パスワードが長すぎます（{MAX_PASSWORD_BYTES}バイトまで）",
+        )
+
+    # 4-5. 番号を採ってから行を作る。社員コードの重複はDBの一意制約が見つける
+    user_id = next_user_id()
+    try:
+        create_user(
+            employee_code=employee_code,
+            name=name,
+            role=req.role,
+            user_id=user_id,
+        )
+    except EmployeeCodeAlreadyExistsError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"社員コード {error.employee_code} は既に使われています",
+        ) from error
+
+    # 6. 初期パスワードはハッシュにして user_passwords に持つ（平文はどこにも残さない）
+    set_password(user_id, req.password)
+
+    return {
+        "success": True,
+        "user_id": user_id,
+        "employee_code": employee_code,
+        "role": req.role,
+    }
 
 
 @app.get("/")
