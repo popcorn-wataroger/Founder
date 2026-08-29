@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.user_logins import record_login
-from app.user_passwords import get_password_hash, verify_password
+from app.user_passwords import get_password_hash, set_password, verify_password
 from app.users import get_user_by_employee_code, resolve_role
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -217,7 +217,8 @@ def verify_user_password(user: dict, password: str) -> bool:
     処理:
         1. user_passwords テーブルからその社員のハッシュを引く
         2. ハッシュがあれば verify_password() で照合し、その結果を返す
-        3. ハッシュが無ければ data/users.csv の平文と突き合わせる
+        3. ハッシュが無ければ data/users.csv の平文と突き合わせる。
+           一致した場合はその場で set_password() を呼び、DBにハッシュを保存する
 
     出力:
         正しければ True、正しくなければ False。
@@ -228,12 +229,24 @@ def verify_user_password(user: dict, password: str) -> bool:
         運用中に変わる値はDB側に積んでいく（user_logins / user_roles と同じ考え方）。
         パスワードも同じ形にしておけば、値の持ち方が1種類の説明で済む。
 
+    CSV照合が成功したときにDBへ保存する理由:
+        これが唯一の移行経路で、ログインした社員から順にハッシュへ移っていく。
+        一度保存されれば、その社員は次回から 2 の経路（DBのハッシュ）だけを通る。
+        専用の移行スクリプトを作らないのは、実行忘れや
+        「本番でどう流すか」といった環境ごとの手順を増やさずに済むため。
+
+    照合が失敗したときに保存しない理由:
+        間違ったパスワードを保存すると、その値でDBのハッシュが作られ、
+        以後その値で本人としてログインできてしまう。
+        保存してよいのは「CSVの正しいパスワードだと確認できた値」だけ。
+
     CSVの平文比較が残っている理由と、いつ消えるか:
         まだハッシュがDBに入っていない社員のための経路。
-        これを外すと移行前の社員が全員ログインできなくなるため、
-        移行が終わるまでの間だけ残す。
+        これを外すと移行前の社員が全員ログインできなくなるため残している。
+        移行はログインを引き金にするので、一度もログインしていない社員は
+        この経路が残り続ける。つまり全員がログインするまでこの分岐は消せない。
         全員分のハッシュがDBに入り、パスワードの個別設定（Issue #123）が
-        済んだ時点でこの分岐ごと不要になる。
+        済んだ時点で不要になる。
 
     失敗時のメッセージを経路によって変えない理由:
         呼び出し元（login）は、どちらの経路で失敗しても同じメッセージを返す。
@@ -254,7 +267,28 @@ def verify_user_password(user: dict, password: str) -> bool:
 
     # まだ移行されていない社員は、これまで通りCSVの平文と比較する
     csv_password: str = user["password"]
-    return csv_password == password
+    if csv_password != password:
+        return False
+
+    # 正しいパスワードだと確認できたので、この機会にハッシュへ移行する
+    try:
+        set_password(user["user_id"], password)
+    except Exception:
+        # 保存に失敗してもログインは通す。
+        # 移行はログインの副次的な処理であり、DBが一時的に書けないというだけで
+        # 認証に通った社員を締め出すのは筋が違う。
+        # 保存できなかった社員は次回ログイン時に再度この経路を通るので、
+        # 取りこぼしたまま移行が終わることもない。
+        # （チャット履歴の保存に失敗しても回答は返す chat_router.py と同じ考え方）
+        #
+        # ログに出すのは user_id までにとどめる。
+        # パスワードの値を出すとハッシュ化した意味が無くなるため、絶対に出さない
+        logger.exception(
+            "パスワードのハッシュ保存に失敗しました（ログインはそのまま続行します） user_id=%s",
+            user["user_id"],
+        )
+
+    return True
 
 
 class LoginRequest(BaseModel):
