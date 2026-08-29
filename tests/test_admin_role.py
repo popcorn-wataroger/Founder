@@ -146,17 +146,22 @@ def _テスト用ファイル() -> dict[str, tuple[str, bytes, str]]:
 # --- 前提の確認 -----------------------------------------------------------------
 
 
-def test_社員マスタにシステム管理者が登録されている() -> None:
-    """users.csv に admin ロールの SYSADMIN が居ることを先に固定する。
+def test_社員マスタにシステム管理者が登録されている(temp_db: None) -> None:
+    """users テーブルに admin ロールの SYSADMIN が居ることを先に固定する。
 
     このファイルの他のテストは、すべて user_id=9 が admin である前提で書いてある。
-    CSVから行が消えたり role が変わったりすると、以降のテストは
+    行が消えたり role が変わったりすると、以降のテストは
     「admin を締め出せている」ではなく「そもそも admin が居ない」ために通ってしまう。
     前提が崩れたことを、ここで最初に気づけるようにしておく。
+
+    temp_db が要る理由:
+        社員マスタは data/users.csv からDBの users テーブルへ移した（Issue #123）。
+        get_user_by_id() はDBを引くようになったので、
+        テーブルを用意する temp_db（init_db を呼ぶ）が必要になる。
     """
     user = get_user_by_id(ADMIN_USER_ID)
 
-    assert user is not None, "users.csv に user_id=9 の行がありません"
+    assert user is not None, "users テーブルに user_id=9 の行がありません"
     assert user["employee_code"] == "SYSADMIN"
     assert user["role"] == ROLE_ADMIN
 

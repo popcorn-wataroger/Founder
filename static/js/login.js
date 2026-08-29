@@ -88,8 +88,10 @@ async function handleLogin() {
     // 前の人の登録結果が残らないよう、ステータス表示をクリアする
     initCommonSourceScreen();
   } else if (data.role === "admin") {
-    // いまは中身のない仮画面なので、初期化のために呼ぶ処理は無い
     showScreen("screen-account-admin");
+    // 前の人が打ちかけた社員コードや、選んだ上書き対象の表示が残らないよう
+    // 初期状態に戻してから、アカウント一覧を読み込む
+    initAccountAdminScreen();
   } else {
     showScreen("screen-chat");
     // 前回までの会話をサーバーから取り直して吹き出しを並べ直す。

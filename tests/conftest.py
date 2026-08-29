@@ -25,10 +25,20 @@ from app.config import DATABASE_URL
 
 # テストのたびに空にするテーブル。
 # 外部キーで繋がっている（chat_messages → chat_sessions）ため、
-# 6つまとめて1文で TRUNCATE する。
+# 7つまとめて1文で TRUNCATE する。
 # user_passwords を含めるのは、あるテストのログインで保存されたハッシュが
-# 次のテストに残ると、テストの結果が実行順に左右されるため
+# 次のテストに残ると、テストの結果が実行順に左右されるため。
+#
+# users を含める理由（重要）:
+#     アカウント追加API（POST /api/admin/accounts）のテストが users に行を足すため。
+#     残したままにすると、追加された社員が次のテストにも居ることになり、
+#     スタッフ一覧の件数を数えるテストなどが実行順で結果を変える。
+#     空にしたあとは temp_db が seed_users_if_empty() を呼び直すので、
+#     どのテストも「data/users.csv の9人だけが居る」状態から始まる。
+#     このとき user_id の採番も9の次（=10）に揃うため、
+#     追加したアカウントに振られる番号もテストごとに同じになる。
 TEST_TABLES = (
+    "users",
     "sources",
     "chat_sessions",
     "chat_messages",
@@ -68,7 +78,7 @@ def _wrong_database_message(database_name: str) -> str:
 
 
 def _truncate_all_tables() -> None:
-    """テスト用DBの6テーブルを空にし、IDの採番も1に戻す。
+    """テスト用DBの7テーブルを空にし、IDの採番も1に戻す。
 
     入力: なし（接続先は DATABASE_URL）
     処理: 接続先がテスト用DBか確認してから TRUNCATE する
@@ -121,9 +131,17 @@ def temp_db() -> Iterator[None]:
 
     処理:
         1. DATABASE_URL が設定されているか確かめる
-        2. init_db() でテーブルを用意する（既にあれば何も起きない）
-        3. 6テーブルを空にして、IDの採番も1に戻す
-        4. テストへ処理を渡す
+        2. init_db() でテーブルとシーケンスを用意する（既にあれば何も起きない）
+        3. TEST_TABLES の7テーブルを空にして、IDの採番も1に戻す
+        4. seed_users_if_empty() で社員マスタ（data/users.csv の9人）を入れ直し、
+           user_id の採番も9の次に合わせる
+        5. テストへ処理を渡す
+
+    なぜ空にしたあとに社員マスタを入れ直すのか:
+        社員マスタは「テストが作るデータ」ではなく「テストの前提」。
+        EMP001 でログインするテストも、スタッフ一覧を数えるテストも、
+        9人が居ることを前提に書いてある。
+        3で users も空にするため、ここで前提を作り直す必要がある。
 
     なぜ function スコープ（テストごと）か:
         テストの実行順や実行するテストの組み合わせによって結果が変わらないようにするため。
@@ -143,5 +161,7 @@ def temp_db() -> Iterator[None]:
 
     database.init_db()
     _truncate_all_tables()
+    # users も空にしたので、社員マスタを入れ直して前提を揃える
+    database.seed_users_if_empty()
 
     yield

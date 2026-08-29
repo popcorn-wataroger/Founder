@@ -26,11 +26,16 @@ from app.user_roles import set_role
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client(temp_db: None) -> Iterator[TestClient]:
     """管理者としてログイン済みの状態でAPIを叩けるクライアント。
 
     認証そのものはここでの検証対象ではないので、require_ceo を差し替えて通す。
     （権限チェックが効いているかは require_ceo のテストで別途確認する）
+
+    temp_db を受け取る理由:
+        このファイルのテストはすべて /api/admin/users… を叩き、
+        社員マスタ（DBの users テーブル）を読む。
+        テーブルを用意する temp_db が無いと、DBに繋げても users が存在しない。
     """
     app.dependency_overrides[require_ceo] = lambda: {"user_id": "1", "role": "ceo"}
     yield TestClient(app)
