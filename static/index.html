@@ -319,6 +319,55 @@ body {
   cursor: pointer;
   padding: 8px 0;
 }
+/* .sidebar-user を button で書いた場合に、ブラウザ既定のボタン装飾を打ち消す。
+   上の .sidebar-user は display / gap / cursor / padding しか指定しておらず、
+   それ以外は既定値のままになるため、button にすると見た目が変わってしまう。
+   打ち消しているのは次の5つ:
+     background / border … 暗いサイドバーの中に灰色の箱と枠線が出る
+     color               … button は親の色を継承しないため、
+                           .sidebar-user-name（色指定なし）が暗い文字になる
+     font                … 同じく継承しないため、Noto Sans JP から既定フォントに戻る
+     width               … button は中身の幅までしか広がらない。
+                           狭い画面用の .sidebar-user { justify-content: center }
+                           （下部のメディアクエリ）が効くよう、div と同じ全幅にする
+     text-align          … button は中身を中央寄せするので、左寄せに戻す
+
+   セレクタを button.sidebar-user にしている理由:
+     いま button なのは #screen-account-admin の1つだけで、他の画面はまだ div。
+     この書き方なら div のままの画面には一切影響せず、
+     Issue #114 で他の画面も button に変えたときは、そのまま同じ打ち消しが効く。 */
+button.sidebar-user {
+  appearance: none;
+  width: 100%;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+/* キーボードでフォーカスが当たったときのリング。
+   上の appearance: none がブラウザ既定のフォーカスリングまで消してしまうため、
+   ここで付け直す。無いと、Tabキーで到達できてもどこにいるのかが見えず、
+   button に変えた目的（キーボードで操作できる）が半分しか果たせない。
+
+   :focus ではなく :focus-visible にしている理由:
+     :focus は「フォーカスがある」だけで当たるので、マウスでクリックした後も
+     リングが出たままになる。ログアウトはクリックで押す人が大半なので、
+     押すたびに枠が残り、既存の見た目が変わってしまう。
+     :focus-visible は「キーボード操作で到達した場合」だけ当たる、と
+     ブラウザが判断してくれる。キーボード利用者にだけリングを見せられる。
+
+   outline を使う理由（border ではなく）:
+     outline はレイアウトの幅を取らないため、リングが出た瞬間に
+     中身がずれない。border だと出た分だけ要素が広がる。
+
+   outline-offset を空けるのは、要素にぴったり接するとリングが
+   文字やアバターに重なって読みにくくなるため。 */
+button.sidebar-user:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
 .sidebar-user-avatar {
   width: 32px; height: 32px;
   background: var(--accent);
@@ -1005,6 +1054,7 @@ body {
                   <option value="employee">社員</option>
                   <option value="source_manager">共通ソース管理者</option>
                   <option value="ceo">社長</option>
+                  <option value="admin">システム管理者</option>
                 </select>
                 <button class="btn btn-outline" id="detail-role-save" onclick="saveStaffRole()" disabled>保存</button>
               </span>
@@ -1039,6 +1089,53 @@ body {
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ===== ACCOUNT ADMIN SCREEN ===== -->
+<!-- システム管理者（admin）専用の画面。いまは中身のない仮画面（Issue #122）。
+     #screen-admin を流用せず独立した画面にしているのは、#screen-source-manager と同じ理由。
+     あちらにはソース管理・スタッフ一覧・社員データが同居しており、「隠す」方式では
+     隠し忘れがそのまま権限の穴になる。この画面にはそれらのDOMが存在しないため、
+     業務機能の導線が出ないことが構造的に保証される
+     （サーバー側も require_business_user が admin を403で弾く）。
+
+     .sidebar-item を1つも置いていないのは意図的。showAdminTab() が
+     document.querySelectorAll('.sidebar-item') を添字で引いているため、
+     ここに増やすと管理者ホームのタブ選択の添字がずれる。 -->
+<div id="screen-account-admin" class="screen admin-screen">
+  <div class="sidebar">
+    <div class="sidebar-logo">F<span>.</span></div>
+    <div class="sidebar-badge">ACCOUNT</div>
+    <div class="sidebar-bottom">
+      <!-- ログアウトは既存画面と同じ logout()（index.html 内で定義）を呼ぶ。
+           トークン削除と世代番号の更新はあの関数がまとめて行う。
+
+           div ではなく button にしている理由（PR #129 のレビュー指摘）:
+           div は標準ではフォーカスを受け取れないため、Tabキーで到達できず、
+           EnterやSpaceでも押せない。この画面はログアウトが唯一の操作なので、
+           div のままだとキーボード利用者はこの画面から出られなくなる。
+           button なら、フォーカス・キー操作・スクリーンリーダーへの
+           「ボタンである」という伝達を、ブラウザが最初から用意してくれる。
+
+           type="button" を付ける理由:
+           button の type は省略すると submit になる。将来この画面に
+           form を置いたとき、押すたびにページが送信・再読み込みされてしまう。 -->
+      <button type="button" class="sidebar-user" onclick="logout()">
+        <div class="sidebar-user-avatar">シ</div>
+        <div>
+          <div class="sidebar-user-name">システム管理者</div>
+          <div class="sidebar-user-role">ログアウト</div>
+        </div>
+      </button>
+    </div>
+  </div>
+
+  <div class="main-content">
+    <div class="main-header">
+      <h1 class="main-title">アカウント管理</h1>
+    </div>
+    <p style="font-size: 13px; color: var(--text-secondary);">アカウント管理画面は準備中です</p>
   </div>
 </div>
 

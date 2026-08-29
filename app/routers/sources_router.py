@@ -15,9 +15,9 @@ from app import storage
 from app.database import get_connection
 from app.routers.auth_router import (
     ROLE_CEO,
+    require_business_user,
     require_ceo,
     require_source_uploader,
-    verify_token,
 )
 from app.safe_urls import build_safe_public_url
 from app.upload_paths import build_save_name, sanitize_upload_name
@@ -564,15 +564,18 @@ async def upload_source(
 @router.post("/my-upload")
 async def upload_my_source(
     file: UploadFile,
-    token: dict = Depends(verify_token),
+    token: dict = Depends(require_business_user),
 ) -> dict[str, Any]:
     """自分の個別ソースとしてファイルを登録し、AIが検索できるようベクトル化する。
 
     誰が使えるか（権限ルール）:
         ログイン中の社員本人。登録できるのは「自分の個別ソース」だけで、
         他人の資料としては登録できない。
-        入口の依存は verify_token だけなので、ログインしていれば誰でも使える
+        入口の依存は require_business_user なので、システム管理者(admin)を除く
+        ログイン済みユーザーなら誰でも使える
         （社員・source_manager・社長のいずれも、自分の資料を上げられる）。
+        システム管理者(admin)はアカウント管理だけを担当し、業務データを持たない役割なので、
+        入口の require_business_user で403になる。
 
     処理:
         1. 入力チェック（ファイル名、拡張子、サイズ）

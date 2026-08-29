@@ -116,13 +116,13 @@ IMPORTANT: static/index.html に全画面のUIプロトタイプあり。デザ�
 ## 認証（MVP）
 
 - CSVファイルで社員マスタ管理（ダミーデータ）
-- ログインで社員コード＋パスワード → ロール判定（employee / source_manager / ceo）
-- ADMIN=管理者、EMP001〜EMP006=社員、EMP007=共通ソース管理者
+- ログインで社員コード＋パスワード → ロール判定（employee / source_manager / ceo / admin）
+- ADMIN=管理者、EMP001〜EMP006=社員、EMP007=共通ソース管理者、SYSADMIN=システム管理者
 
 ## データモデル
 
 ### users（社員マスタ）
-user_id(PK), employee_code, name, department, gender, birth_date, family, hire_date, employment_type, role(employee/source_manager/ceo), password_hash, last_login_at
+user_id(PK), employee_code, name, department, gender, birth_date, family, hire_date, employment_type, role(employee/source_manager/ceo/admin), password_hash, last_login_at
 
 ### sources（ソース）
 source_id(PK), file_name, file_type(pdf/docx/pptx/txt/url), file_path, scope(common/individual), owner_user_id(FK→users, NULLなら共通), uploaded_at, uploaded_by(FK→users)
@@ -137,19 +137,27 @@ message_id(PK), session_id(FK→chat_sessions), role(user/assistant), content, c
 
 IMPORTANT: これらの権限ルールは絶対に守ること。
 
-| 操作 | 社員 | 共通ソース管理者 | 社長 |
-|------|------|------|------|
-| 共通ソースでAIに質問 | ○ | ○ | ○ |
-| 自分の個別ソースでAIに質問 | ○ | ○ | ○ |
-| 他人の個別ソースでAIに質問 | ✕ 絶対不可 | ✕ 絶対不可 | ○ |
-| 全社共通ソースのアップロード | ✕ | ○ | ○ |
-| 自分の個別ソースのアップロード | ○ | ○ | ○ |
-| 他人の個別ソースのアップロード | ✕ | ✕ | ○ |
-| 全社共通ソースの削除 | ✕ | ○ | ○ |
-| 個別ソースの削除（自分の分を含む） | ✕ | ✕ | ○ |
-| ソースのダウンロード | ✕ | ✕ | ○ |
-| チャットログ閲覧 | 自分のみ | 自分のみ | 全員分 |
-| 社員データ閲覧 | ✕ | ✕ | ○ |
+| 操作 | 社員 | 共通ソース管理者 | 社長 | システム管理者 |
+|------|------|------|------|------|
+| AIチャットの利用 | ○ | ○ | ○ | ✕ |
+| 共通ソースでAIに質問 | ○ | ○ | ○ | ✕ |
+| 自分の個別ソースでAIに質問 | ○ | ○ | ○ | ✕ |
+| 他人の個別ソースでAIに質問 | ✕ 絶対不可 | ✕ 絶対不可 | ○ | ✕ 絶対不可 |
+| 全社共通ソースのアップロード | ✕ | ○ | ○ | ✕ |
+| 自分の個別ソースのアップロード | ○ | ○ | ○ | ✕ |
+| 他人の個別ソースのアップロード | ✕ | ✕ | ○ | ✕ |
+| 全社共通ソースの削除 | ✕ | ○ | ○ | ✕ |
+| 個別ソースの削除（自分の分を含む） | ✕ | ✕ | ○ | ✕ |
+| ソースのダウンロード | ✕ | ✕ | ○ | ✕ |
+| チャットログ閲覧 | 自分のみ | 自分のみ | 全員分 | ✕ |
+| 社員データ閲覧 | ✕ | ✕ | ○ | ✕ |
+| アカウント・権限の管理 | ✕ | ✕ | ✕ ※ | ○ |
+
+※ 「アカウント・権限の管理」の社長（ceo）について:
+
+- この表は「そうあるべき」姿を書いている。**現時点の実装では ceo にロール変更API（PUT /api/admin/users/{user_id}/role）の権限があり、表とは一致していない**
+- アカウント管理をシステム管理者に集約するか、社長にも残すかは Issue #123・#124 で整理される予定。実装を表に合わせるのはその時点で行う
+- それまでは「表と実装が食い違っている行がここ1つある」ことを前提に読むこと。他の行は実装と一致している
 
 削除について（Issue #118）:
 
@@ -160,9 +168,17 @@ IMPORTANT: これらの権限ルールは絶対に守ること。
 - 自分が上げた**個別**ソースを本人が削除できるようにするかは、引き続き別Issueとする（現状は社長のみ削除できる）
 - DBにはソースの owner_user_id フィールドを必ず持たせる（誰の資料かを一意に決め、検索と表示の絞り込みに使うため）
 - 社員がAIに質問した場合、個別ソース（他人の評価・給与情報）は絶対に回答に含めない
-- role は employee / source_manager / ceo の3値。判定は app/routers/auth_router.py の can_upload_common_source() に集約している
+- role は employee / source_manager / ceo / admin の4値。共通ソースを登録してよいかの判定は app/routers/auth_router.py の can_upload_common_source() に集約している
 - 社員が自分の資料を登録する経路は POST /api/sources/my-upload。scope と owner_user_id はリクエストで指定できず、サーバーがJWTの user_id から決める
 - 社員のチャットの検索範囲は「共通ソース＋自分の個別ソース」。他人の個別ソースは app/vector_store.py の search() が構造的に除外する
+
+システム管理者について（Issue #122）:
+
+- admin はアカウントの管理だけを担当し、業務データ（チャット・ソース・社員データ）を一切持たない役割。社長（ceo）の「全部見られる」とは正反対で、「業務については何も見られない」のが正しい状態
+- 業務系API（チャット・自分の個別ソースの登録）は app/routers/auth_router.py の require_business_user() が admin を403で弾く。他人の個別ソースに届かないのは、そもそも業務系の入口に入れないため
+- アカウント管理の権限判定は app/routers/auth_router.py の can_manage_accounts() に集約している。can_upload_common_source() と同じく、「誰がその権限を持つか」を1関数に閉じ込め、入口側（require_account_manager）は使い方だけを持つ
+- スタッフ一覧・社員詳細・社員別チャットの対象からは STAFF_LIST_EXCLUDED_ROLES（ceo / admin）で除外する。スタッフ一覧は業務上の社員を並べる画面なので、業務データを持たない admin は並べても開く中身が無い。判定は3箇所とも resolve_role() の結果（DBの上書きを優先した実効ロール）で行う
+- 最初の1人は data/users.csv の SYSADMIN 行で用意している。画面からアカウントを作る機能はまだ無く、admin でログインすると準備中の仮画面（#screen-account-admin）が出る
 
 ## ソース管理
 
