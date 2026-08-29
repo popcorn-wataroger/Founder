@@ -69,6 +69,58 @@ MAX_PASSWORD_BYTES = 72
 MIN_PASSWORD_LENGTH = 8
 
 
+def check_password_length(password: str) -> str | None:
+    """パスワードの長さが規則を満たしているか調べる。
+
+    入力:
+        password … 検査したい平文のパスワード
+
+    処理:
+        1. 文字数が MIN_PASSWORD_LENGTH 以上かを見る
+        2. UTF-8 でのバイト数が MAX_PASSWORD_BYTES 以下かを見る
+
+    出力:
+        規則に反していれば、その理由を説明するメッセージの文字列。
+        問題が無ければ None。
+
+    なぜ真偽値ではなくメッセージを返すのか:
+        呼び出し元（app/main.py のパスワードを扱う3つのAPI）は、
+        どれも同じ文言で400を返したい。真偽値だけを返すと
+        メッセージの組み立てが呼び出し元ごとに散り、
+        「アカウント追加では8文字と言うのに、変更では何も言わない」
+        といった食い違いが起きる。文言までこの関数が決めれば、応答が必ず揃う。
+
+    なぜ None が「問題なし」なのか:
+        app/user_roles.py の get_role() と同じ形（無ければ None）に合わせている。
+        呼び出し元は「返ってきたら400にする」と読める。
+
+    なぜ HTTPException を投げないのか（重要）:
+        このモジュールは bcrypt とDBにしか依存しておらず、FastAPI を知らない。
+        ここでHTTPの都合（ステータスコード）を持ち込むと、
+        パスワードの保存という仕事とWeb層の仕事が混ざる。
+        can_upload_common_source() などと同じで、
+        「判定はここ、HTTPの投げ方は入口側」で役割を分ける。
+
+    ログインAPIの長さチェックをここに寄せていない理由:
+        app/routers/auth_router.py の login は、長すぎるパスワードに対して
+        400ではなく200と {"success": False, "message": ...} を返す仕様で、
+        下限のチェックも持たない（既存社員のパスワードが
+        MIN_PASSWORD_LENGTH 未満の可能性があるため）。
+        寄せるとログインの挙動が変わってしまうので、あちらはそのままにしてある。
+
+    セキュリティ:
+        引数 password の中身は戻り値のメッセージに含めない。
+        メッセージはそのままAPIの応答になり、ログにも残りうるため。
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"パスワードは{MIN_PASSWORD_LENGTH}文字以上にしてください"
+
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        return f"パスワードが長すぎます（{MAX_PASSWORD_BYTES}バイトまで）"
+
+    return None
+
+
 def hash_password(password: str) -> str:
     """パスワードをハッシュ化した文字列を返す。
 

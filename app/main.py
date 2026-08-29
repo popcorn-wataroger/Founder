@@ -12,9 +12,11 @@ from app.routers.auth_router import (
     VALID_ROLES,
     require_account_manager,
     require_ceo,
+    verify_token,
+    verify_user_password,
 )
 from app.user_logins import get_last_login_at
-from app.user_passwords import MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH, set_password
+from app.user_passwords import check_password_length, set_password
 from app.user_roles import set_role
 from app.users import (
     EmployeeCodeAlreadyExistsError,
@@ -263,6 +265,38 @@ async def update_admin_user_role(
     return {"success": True, "user_id": user_id, "role": req.role}
 
 
+def _reject_invalid_password(password: str) -> None:
+    """パスワードの長さが規則に反していれば400で中断する。
+
+    入力:
+        password … 検査したい平文のパスワード
+
+    処理:
+        app/user_passwords.py の check_password_length() に判定を任せ、
+        メッセージが返ってきたら（＝規則違反なら）HTTPException を投げる。
+
+    出力:
+        なし（問題が無ければ何も起きずに戻る）
+
+    例外:
+        HTTPException(400) … 短すぎる、または長すぎるとき
+
+    なぜ判定とHTTPへの変換を分けるのか:
+        「何文字以上か」はパスワードの決まりごとなので app/user_passwords.py が持ち、
+        「規則違反を何番で返すか」はWeb層の都合なのでこちらが持つ。
+        パスワードを扱うAPIは3本（アカウント追加・自分の変更・強制上書き）あり、
+        この2行を3回書き写すと、片方だけ直す事故が起きる。
+
+    セキュリティ:
+        引数 password の中身はログにも例外メッセージにも出さない。
+        detail に入るのは check_password_length() が返す規則の説明だけで、
+        利用者が入力した値そのものは含まれない。
+    """
+    message = check_password_length(password)
+    if message is not None:
+        raise HTTPException(status_code=400, detail=message)
+
+
 class AccountCreateRequest(BaseModel):
     employee_code: str
     name: str
@@ -345,17 +379,10 @@ async def create_account(
         )
 
     # 3. パスワードの長さ。短すぎるものは推測されやすく、
-    #    長すぎるものは bcrypt が扱えない（hash_password が ValueError になる）
-    if len(req.password) < MIN_PASSWORD_LENGTH:
-        raise HTTPException(
-            status_code=400,
-            detail=f"パスワードは{MIN_PASSWORD_LENGTH}文字以上にしてください",
-        )
-    if len(req.password.encode("utf-8")) > MAX_PASSWORD_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"パスワードが長すぎます（{MAX_PASSWORD_BYTES}バイトまで）",
-        )
+    #    長すぎるものは bcrypt が扱えない（hash_password が ValueError になる）。
+    #    規則も文言も app/user_passwords.py に集約してあるので、
+    #    パスワードを扱う他のAPIと必ず同じ応答になる
+    _reject_invalid_password(req.password)
 
     # 4-5. 番号を採ってから行を作る。社員コードの重複はDBの一意制約が見つける
     user_id = next_user_id()
@@ -381,6 +408,154 @@ async def create_account(
         "employee_code": employee_code,
         "role": req.role,
     }
+
+
+class MyPasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.put("/api/me/password")
+async def change_my_password(
+    req: MyPasswordChangeRequest, token: dict = Depends(verify_token)
+) -> dict[str, object]:
+    """ログイン中の本人が自分のパスワードを変更する（全ロール）。
+
+    入力:
+        req … リクエストボディ（MyPasswordChangeRequest）
+            current_password … 今のパスワード（本人確認のため）
+            new_password     … 新しいパスワード
+        token … verify_token が検証したJWTの中身（user_id / role を含む）
+
+    出力:
+        {"success": True}
+
+    処理:
+        1. トークンの user_id から社員を1件引く
+        2. current_password を verify_user_password() で照合する
+        3. new_password の長さを検証する
+        4. set_password() でハッシュにして保存する
+
+    エラー:
+        400 … new_password の長さが規定外
+        401 … 未ログイン／トークンが無効（verify_token が投げる）、
+              または current_password が一致しない
+
+    なぜ verify_token を使うのか（重要）:
+        パスワードの変更は、業務機能ではなく自分のアカウントの管理。
+        システム管理者(admin)を含め、ログインできる人は全員が自分の分を変えられるべき。
+        require_business_user を使うと admin が自分のパスワードを変えられなくなり、
+        初期パスワードのまま運用し続けることになる。
+
+    なぜ照合を自前で書かないのか（重要）:
+        app/routers/auth_router.py の verify_user_password() は、
+        user_passwords にハッシュがあればそれで照合し、
+        まだ無ければ users.password（data/users.csv 由来の平文）と比べる、
+        という移行中の事情を含んだ判定になっている。
+        ここで自前の照合を書くと、まだ一度もログインしていない社員が
+        「ログインはできるのにパスワードを変更できない」状態になる。
+        判定を1箇所に保つため、ログインと同じ関数をそのまま使う。
+
+        なお verify_user_password() は平文で一致したときハッシュを保存する。
+        そのため変更処理の中で「古いパスワードのハッシュ保存 → 新しいパスワードで上書き」
+        と2回書き込むことになるが、結果は変わらない。
+        判定を1箇所に保つことの方を優先している。
+
+    なぜ新旧が同じパスワードでも許すのか:
+        「前と同じものは使えない」を入れるには過去のパスワードを覚えておく必要があり、
+        そのぶん保存する情報が増える。Issue #123 では禁止しないと決めている。
+
+    401のメッセージを1種類にしている理由:
+        社員が見つからない場合も、パスワードが違う場合も同じ文言を返す。
+        分けて返すと「このトークンの持ち主はもう存在しない」という
+        内部の状態を外から確かめられるようになる。
+        利用者にとっては、どちらの場合も「やり直してください」で行動が変わらない。
+
+    セキュリティ:
+        current_password / new_password の中身はログにも応答にも出さない。
+    """
+    user = get_user_by_id(token["user_id"])
+
+    # 1-2. 本人確認。ここを通らないと誰のパスワードでも変えられてしまう。
+    #      社員が見つからない場合（トークン発行後に消えた場合）も同じ扱いにする
+    if user is None or not verify_user_password(user, req.current_password):
+        raise HTTPException(status_code=401, detail="現在のパスワードが正しくありません")
+
+    # 3. 新しいパスワードの長さ（規則も文言も app/user_passwords.py が持つ）
+    _reject_invalid_password(req.new_password)
+
+    # 4. ハッシュにして保存する（平文はどこにも残さない）
+    set_password(user["user_id"], req.new_password)
+
+    return {"success": True}
+
+
+class AccountPasswordResetRequest(BaseModel):
+    new_password: str
+
+
+@app.put("/api/admin/accounts/{user_id}/password")
+async def reset_account_password(
+    user_id: str,
+    req: AccountPasswordResetRequest,
+    token: dict = Depends(require_account_manager),
+) -> dict[str, object]:
+    """指定した社員のパスワードを強制的に上書きする（システム管理者専用）。
+
+    入力:
+        user_id … 対象の社員の user_id（URLパスで指定）
+        req     … リクエストボディ（AccountPasswordResetRequest）
+            new_password … 新しいパスワード
+        token   … require_account_manager が返すログイン情報
+                  （システム管理者でなければ403で弾かれている）
+
+    出力:
+        {"success": True, "user_id": 対象のuser_id}
+
+    処理:
+        1. 対象の社員が実在するか確かめる（見つからなければ404）
+        2. new_password の長さを検証する
+        3. set_password() でハッシュにして保存する
+
+    エラー:
+        400 … new_password の長さが規定外
+        403 … システム管理者以外が叩いた場合（require_account_manager が投げる）
+        404 … 対象の user_id が存在しない場合
+
+    なぜ現在のパスワードを要求しないのか:
+        これは本人がパスワードを忘れたときに管理者が復旧させるための入口。
+        現在のパスワードを求めると、忘れた人を助けられない。
+        「本人でなくても変えられる」ことそのものが目的なので、
+        代わりに require_account_manager で入口を絞っている。
+
+    なぜ ceo や admin を404にしないのか:
+        社員データ画面（GET /api/admin/users/{user_id}）は
+        STAFF_LIST_EXCLUDED_ROLES で ceo / admin を404にしているが、
+        あちらは「業務上の社員を見る画面」なので対象から外している。
+        こちらはアカウントの管理で、社長やシステム管理者のパスワードも
+        復旧できなければ機能として成り立たない。目的が違うので判定も変える。
+
+    自分自身を対象にできる理由:
+        禁止する理由がない。パスワードは自分のものを変えるのが正当な操作で、
+        ロール変更（自分を降格させると社長ゼロになる）のような事故が起きない。
+        本人が変える経路は PUT /api/me/password にもあるが、
+        こちらを使っても同じ結果になる。
+
+    セキュリティ:
+        new_password の中身はログにも応答にも出さない。
+        応答に含めるのは「誰のパスワードを変えたか」までにとどめる。
+    """
+    # 1. 実在しない user_id に保存させない（user_passwords に幽霊の行が増えるのを防ぐ）
+    if get_user_by_id(user_id) is None:
+        raise HTTPException(status_code=404, detail="社員が見つかりません")
+
+    # 2. 新しいパスワードの長さ（アカウント追加・本人による変更と同じ規則）
+    _reject_invalid_password(req.new_password)
+
+    # 3. ハッシュにして保存する。既に記録があれば上書きされる（set_password は UPSERT）
+    set_password(user_id, req.new_password)
+
+    return {"success": True, "user_id": user_id}
 
 
 @app.get("/")
