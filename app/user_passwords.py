@@ -49,6 +49,11 @@ import bcrypt
 
 from app.database import get_connection
 
+# bcrypt が扱えるパスワードの最大バイト数。
+# ライブラリ側の仕様で、これを超える入力は bcrypt 5.0 以降 ValueError になる
+# （古いバージョンのように黙って切り捨てられることはない）。
+MAX_PASSWORD_BYTES = 72
+
 
 def hash_password(password: str) -> str:
     """パスワードをハッシュ化した文字列を返す。
@@ -57,12 +62,42 @@ def hash_password(password: str) -> str:
         password … 平文のパスワード
 
     処理:
-        1. gensalt() でソルトを新しく作る
-        2. bcrypt.hashpw() でソルト込みのハッシュを作る（bytes で返る）
-        3. DBにTEXTとして入れるため decode("utf-8") で文字列にする
+        1. UTF-8 でのバイト数が MAX_PASSWORD_BYTES 以内かを確かめる
+        2. gensalt() でソルトを新しく作る
+        3. bcrypt.hashpw() でソルト込みのハッシュを作る（bytes で返る）
+        4. DBにTEXTとして入れるため decode("utf-8") で文字列にする
 
     出力:
         ハッシュ文字列（例: $2b$12$... の形。ソルトを内側に含む）
+
+    例外:
+        password が MAX_PASSWORD_BYTES を超えるとき ValueError
+
+    なぜ長さの上限があるか:
+        bcrypt の仕様で、扱える入力は72バイトまで。
+        bcrypt 5.0 はこれを超える入力を ValueError で拒否する。
+
+    なぜ切り捨てずにエラーにするか:
+        切り捨てると、73バイト目以降だけが違う2つのパスワードが
+        同じものとして扱われる。
+        つまり「入力した通りのパスワードで認証されていない」状態を、
+        利用者にも運用側にも知らせないまま作ってしまう。
+        またマルチバイト文字の途中でバイト列を切ると不正なUTF-8になり、
+        別のところで文字化けや例外の原因になる。
+        入らないものは入らないと言って止めるほうが安全側に倒れる。
+
+    文字数ではなくバイト数で数える理由:
+        bcrypt が見ているのはバイト列であって文字数ではない。
+        UTF-8 では日本語1文字が3バイトになるため、
+        文字数で数えると「英数字なら通るのに日本語だと落ちる」という
+        条件によって変わる上限になってしまう。
+        バイト数で数えれば、判定基準がライブラリの制限と1対1で対応する
+        （日本語だけのパスワードなら24文字が上限になる）。
+
+    例外メッセージにパスワードを含めない理由:
+        例外メッセージはログにもエラー画面にも流れうる。
+        平文が出た時点でハッシュ化した意味が消えるため、
+        書くのはバイト数と上限だけにとどめる。
 
     毎回結果が変わる:
         gensalt() が呼び出しのたびに違うソルトを作るため、
@@ -76,8 +111,17 @@ def hash_password(password: str) -> str:
         bytes と str の変換をこの関数の中に閉じ込めておく。
         呼び出し元が bytes を意識しなくて済む。
     """
+    # bcrypt に渡す前に長さを確かめる。
+    # メッセージに出してよいのはバイト数と上限だけで、パスワードの値そのものは出さない
+    password_bytes = password.encode("utf-8")
+    if len(password_bytes) > MAX_PASSWORD_BYTES:
+        raise ValueError(
+            f"パスワードが長すぎます（{len(password_bytes)}バイト）。"
+            f"UTF-8 で {MAX_PASSWORD_BYTES} バイトまでにしてください。"
+        )
+
     # gensalt() は呼ぶたびに新しいソルトを作る。ソルトはハッシュ文字列の中に埋め込まれる
-    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    hashed = bcrypt.hashpw(password_bytes, bcrypt.gensalt())
     return hashed.decode("utf-8")
 
 

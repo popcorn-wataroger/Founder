@@ -14,6 +14,9 @@
        ＝ 間違ったパスワードを保存すると、その値でログインできてしまう
     5. 移行後も同じパスワードでログインできること（2回目はDBのハッシュ経由になる）
     6. ハッシュの保存に失敗しても、認証に通った社員はログインできること
+    7. bcrypt が扱えない長さ（72バイト超）のパスワードを、黙って通さないこと
+       ＝ 切り捨てて別のパスワードとして保存したり、
+       移行だけが失敗し続ける状態になったりしないこと
 
 users.csv 上の前提:
     user_id=2 … EMP001（employee、パスワードは "password"）
@@ -29,6 +32,7 @@ from fastapi.testclient import TestClient
 from app import database
 from app.main import app
 from app.user_passwords import (
+    MAX_PASSWORD_BYTES,
     get_password_hash,
     hash_password,
     set_password,
@@ -40,6 +44,16 @@ EMPLOYEE_USER_ID = "2"
 
 # data/users.csv に入っている検証用のパスワード
 CSV_PASSWORD = "password"
+
+# bcrypt の上限ちょうど（72バイト）と、1バイト超えたもの。
+# ASCIIは1文字1バイトなので、文字数がそのままバイト数になる
+PASSWORD_72_BYTES = "a" * MAX_PASSWORD_BYTES
+PASSWORD_73_BYTES = "a" * (MAX_PASSWORD_BYTES + 1)
+
+# 日本語はUTF-8で1文字3バイト。24文字で72バイト、25文字で75バイトになる。
+# 「文字数で数えていないか」を確かめるために使う
+PASSWORD_24_CHARS_JA = "あ" * 24
+PASSWORD_25_CHARS_JA = "あ" * 25
 
 
 @pytest.fixture
@@ -127,6 +141,54 @@ def test_bcryptの形式でない値を渡しても例外にならずFalseが返
     verify_password が捕まえて「照合失敗」に倒している。
     """
     assert verify_password(CSV_PASSWORD, password_hash) is False, 理由
+
+
+def test_72バイトちょうどのパスワードはハッシュ化できる() -> None:
+    """上限ちょうどは通す。境界を1つ内側に間違えていないことの確認。"""
+    hashed = hash_password(PASSWORD_72_BYTES)
+
+    assert verify_password(PASSWORD_72_BYTES, hashed) is True
+
+
+def test_73バイトのパスワードはValueErrorになる() -> None:
+    """bcrypt が扱えない長さは、切り捨てずにエラーで止める。
+
+    切り捨ててしまうと、73バイト目以降だけが違う2つのパスワードが
+    同じものとして扱われ、入力した通りのパスワードで認証されていない状態になる。
+    """
+    with pytest.raises(ValueError):
+        hash_password(PASSWORD_73_BYTES)
+
+
+def test_日本語24文字はハッシュ化できる() -> None:
+    """UTF-8で72バイトちょうど。日本語でも上限まで使えること。"""
+    hashed = hash_password(PASSWORD_24_CHARS_JA)
+
+    assert verify_password(PASSWORD_24_CHARS_JA, hashed) is True
+
+
+def test_日本語25文字はValueErrorになる() -> None:
+    """UTF-8で75バイト。文字数（25）ではなくバイト数（75）で弾かれること。
+
+    文字数で数える実装だと、日本語25文字は上限72より小さいので通ってしまい、
+    bcrypt 側で例外になる。判定の基準がバイト数であることをここで固定する。
+    """
+    with pytest.raises(ValueError):
+        hash_password(PASSWORD_25_CHARS_JA)
+
+
+def test_例外メッセージにパスワードの値が含まれない() -> None:
+    """例外メッセージはログやエラー画面に流れうるので、平文を出さない。
+
+    出してよいのはバイト数と上限だけ。
+    """
+    長いパスワード = "秘密" * 20  # 120バイト。値が漏れたら分かるように固有の文字列にする
+
+    with pytest.raises(ValueError) as 例外:
+        hash_password(長いパスワード)
+
+    assert 長いパスワード not in str(例外.value)
+    assert "秘密" not in str(例外.value)
 
 
 # --- DB操作（temp_db を使う） -----------------------------------------------
@@ -249,3 +311,22 @@ def test_ハッシュの保存に失敗してもログインは成功する(
 
     assert response.json()["success"] is True
     assert _fetch_all_passwords() == {}  # 保存は行われていない
+
+
+def test_長すぎるパスワードのログインは専用のメッセージで断られる(client: TestClient) -> None:
+    """入力の形式の問題は、認証失敗とは別の文言で伝える。
+
+    認証失敗と同じ文言にすると、正しいパスワードを入れている社員が
+    「間違っています」と言われることになり、長さが原因だと気づけない。
+
+    入口で弾かないと、hash_password() の ValueError が
+    verify_user_password() の except Exception に握られ、
+    利用者には何も伝わらないまま移行だけが毎回失敗し続ける。
+    """
+    response = _login(client, "EMP001", PASSWORD_73_BYTES)
+    body = response.json()
+
+    assert body["success"] is False
+    assert body["message"] != "社員コードまたはパスワードが正しくありません"
+    assert "長すぎます" in body["message"]
+    assert _fetch_all_passwords() == {}  # 移行も起きない

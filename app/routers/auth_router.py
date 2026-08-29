@@ -8,7 +8,12 @@ from pydantic import BaseModel
 
 from app import config
 from app.user_logins import record_login
-from app.user_passwords import get_password_hash, set_password, verify_password
+from app.user_passwords import (
+    MAX_PASSWORD_BYTES,
+    get_password_hash,
+    set_password,
+    verify_password,
+)
 from app.users import get_user_by_employee_code, resolve_role
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -339,17 +344,30 @@ async def login(req: LoginRequest):
 
         失敗時に token や role を返さないのは、認証できていない相手に
         ロールなどの情報を渡さないため。
-        message は「社員コードまたはパスワードが正しくありません」で統一しており、
+        認証の可否に関わる失敗の message は
+        「社員コードまたはパスワードが正しくありません」で統一しており、
         どちらが間違っているかは伝えない（存在する社員コードを推測されないため）。
 
-        失敗になるのは次の3つ。
+        失敗になるのは次の4つ。カッコ内が返す message。
         - 社員コードかパスワードが未入力
+          （「社員コードとパスワードを入力してください」）
+        - パスワードが72バイトを超えている
+          （「パスワードが長すぎます（72バイトまで）」）
         - 社員コードが見つからない、またはパスワードが一致しない
+          （「社員コードまたはパスワードが正しくありません」）
         - 実効ロールが VALID_ROLES に無い（user_roles テーブルに未知のロール名が
           記録されている場合など）
-        最後のケースも message を認証失敗と同一にしているのは、
+          （「社員コードまたはパスワードが正しくありません」）
+
+        ロールが不正なケースも message を認証失敗と同一にしているのは、
         「ロールが不正です」と伝えると内部の状態を外に漏らすことになるため。
         原因はサーバーのログ（logger.error）から追う。
+
+        逆に、上の2つ（未入力・長さ超過）が別の文言なのは、
+        認証の可否ではなく入力の形式の問題だから。
+        利用者が自分で直せるものは、直せるように理由を伝える。
+        どちらも社員を探す前に判定するので、
+        文言が分かれても社員コードの実在は漏れない。
 
     処理:
         1. 入力チェック → 社員コードでユーザーを探す → パスワード照合
@@ -365,6 +383,34 @@ async def login(req: LoginRequest):
     """
     if not req.employee_code or not req.password:
         return {"success": False, "message": "社員コードとパスワードを入力してください"}
+
+    # パスワードの長さを、社員を探すより前にここで弾く。
+    #
+    # なぜ入口で弾くのか:
+    #     hash_password() も72バイトを超える入力を ValueError にするが、
+    #     そちらが呼ばれるのは verify_user_password() の移行処理の中で、
+    #     例外は except Exception に握られてログにしか残らない。
+    #     つまり利用者には何も伝わらないまま、毎回CSVの平文経路でログインし続ける
+    #     （＝いつまでもハッシュに移行されない）ことになる。
+    #     入口で弾いて理由をその場で伝えれば、利用者が自分で直せる。
+    #
+    # なぜ認証失敗と文言を分けるのか:
+    #     これは入力の形式の問題であって、社員コードやパスワードが
+    #     合っているかどうかとは別の話。認証失敗と同じ文言にすると、
+    #     正しいパスワードを入れているのに「間違っています」と言われることになり、
+    #     長さが原因だと気づけない。
+    #     ここで長さを伝えても、社員が実在するかどうかは漏れない
+    #     （社員を探す前に判定しているので、存在しない社員コードでも同じ応答になる）。
+    #
+    # Issue #123 との関係:
+    #     パスワードを画面から設定できるようにする際にも、同じ検証が要る。
+    #     設定時に72バイトを超える値を受け付けてしまうと、
+    #     保存できないパスワードを本人に決めさせることになる。
+    if len(req.password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        return {
+            "success": False,
+            "message": f"パスワードが長すぎます（{MAX_PASSWORD_BYTES}バイトまで）",
+        }
 
     user = get_user_by_employee_code(req.employee_code)
 
