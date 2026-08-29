@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.user_logins import record_login
+from app.user_passwords import get_password_hash, verify_password
 from app.users import get_user_by_employee_code, resolve_role
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -205,6 +206,57 @@ def require_business_user(token: dict = Depends(verify_token)) -> dict:
     return token
 
 
+def verify_user_password(user: dict, password: str) -> bool:
+    """入力されたパスワードがその社員のものとして正しいかを判定する。
+
+    入力:
+        user     … get_user_by_employee_code() が返した社員1人分の辞書
+                   （user_id と、CSV由来の password を含む）
+        password … 画面から入力された平文のパスワード
+
+    処理:
+        1. user_passwords テーブルからその社員のハッシュを引く
+        2. ハッシュがあれば verify_password() で照合し、その結果を返す
+        3. ハッシュが無ければ data/users.csv の平文と突き合わせる
+
+    出力:
+        正しければ True、正しくなければ False。
+
+    DBのハッシュを優先し、無ければCSVを使う理由:
+        app/users.py の resolve_role() と同じ「DBを正、CSVを既定値」のパターン。
+        data/users.csv はGit管理下の読み取り専用の初期値で、
+        運用中に変わる値はDB側に積んでいく（user_logins / user_roles と同じ考え方）。
+        パスワードも同じ形にしておけば、値の持ち方が1種類の説明で済む。
+
+    CSVの平文比較が残っている理由と、いつ消えるか:
+        まだハッシュがDBに入っていない社員のための経路。
+        これを外すと移行前の社員が全員ログインできなくなるため、
+        移行が終わるまでの間だけ残す。
+        全員分のハッシュがDBに入り、パスワードの個別設定（Issue #123）が
+        済んだ時点でこの分岐ごと不要になる。
+
+    失敗時のメッセージを経路によって変えない理由:
+        呼び出し元（login）は、どちらの経路で失敗しても同じメッセージを返す。
+        「ハッシュが未登録です」のような区別を外に出すと、
+        その社員が移行済みかどうかが、ログインできない相手にも分かってしまう。
+        この関数が True / False しか返さないのも同じ理由で、
+        失敗の内訳を呼び出し元に持ち出させないためである。
+
+    セキュリティ:
+        平文のパスワード（引数 password / user["password"]）はログにも
+        例外メッセージにも出さない。判定結果だけを返す。
+    """
+    password_hash = get_password_hash(user["user_id"])
+
+    # ハッシュがある社員は移行済み。DB側の値だけで判定する
+    if password_hash is not None:
+        return verify_password(password, password_hash)
+
+    # まだ移行されていない社員は、これまで通りCSVの平文と比較する
+    csv_password: str = user["password"]
+    return csv_password == password
+
+
 class LoginRequest(BaseModel):
     employee_code: str
     password: str
@@ -260,7 +312,7 @@ async def login(req: LoginRequest):
     if user is None:
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
 
-    if user["password"] != req.password:
+    if not verify_user_password(user, req.password):
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
 
     # 実効ロールをここで1回だけ決める（DBの上書きがあればそれ、無ければCSVの値）。
