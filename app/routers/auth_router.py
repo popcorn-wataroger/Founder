@@ -8,6 +8,12 @@ from pydantic import BaseModel
 
 from app import config
 from app.user_logins import record_login
+from app.user_passwords import (
+    MAX_PASSWORD_BYTES,
+    get_password_hash,
+    set_password,
+    verify_password,
+)
 from app.users import get_user_by_employee_code, resolve_role
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -205,6 +211,116 @@ def require_business_user(token: dict = Depends(verify_token)) -> dict:
     return token
 
 
+def verify_user_password(user: dict, password: str) -> bool:
+    """入力されたパスワードがその社員のものとして正しいかを判定する。
+
+    入力:
+        user     … get_user_by_employee_code() が返した社員1人分の辞書
+                   （user_id と、CSV由来の password を含む）
+        password … 画面から入力された平文のパスワード
+
+    処理:
+        1. user_passwords テーブルからその社員のハッシュを引く
+        2. ハッシュがあれば verify_password() で照合し、その結果を返す
+        3. ハッシュが無ければ data/users.csv の平文と突き合わせる。
+           一致した場合はその場で set_password() を呼び、DBにハッシュを保存する
+
+    出力:
+        正しければ True、正しくなければ False。
+
+    DBのハッシュを優先し、無ければCSVを使う理由:
+        app/users.py の resolve_role() と同じ「DBを正、CSVを既定値」のパターン。
+        data/users.csv はGit管理下の読み取り専用の初期値で、
+        運用中に変わる値はDB側に積んでいく（user_logins / user_roles と同じ考え方）。
+        パスワードも同じ形にしておけば、値の持ち方が1種類の説明で済む。
+
+    CSV照合が成功したときにDBへ保存する理由:
+        これが唯一の移行経路で、ログインした社員から順にハッシュへ移っていく。
+        一度保存されれば、その社員は次回から 2 の経路（DBのハッシュ）だけを通る。
+        専用の移行スクリプトを作らないのは、実行忘れや
+        「本番でどう流すか」といった環境ごとの手順を増やさずに済むため。
+
+    照合が失敗したときに保存しない理由:
+        間違ったパスワードを保存すると、その値でDBのハッシュが作られ、
+        以後その値で本人としてログインできてしまう。
+        保存してよいのは「CSVの正しいパスワードだと確認できた値」だけ。
+
+    CSVの平文比較が残っている理由と、いつ消えるか:
+        まだハッシュがDBに入っていない社員のための経路。
+        これを外すと移行前の社員が全員ログインできなくなるため残している。
+        移行はログインを引き金にするので、一度もログインしていない社員は
+        この経路が残り続ける。つまり全員がログインするまでこの分岐は消せない。
+        全員分のハッシュがDBに入り、パスワードの個別設定（Issue #123）が
+        済んだ時点で不要になる。
+
+    失敗時のメッセージを経路によって変えない理由:
+        呼び出し元（login）は、どちらの経路で失敗しても同じメッセージを返す。
+        「ハッシュが未登録です」のような区別を外に出すと、
+        その社員が移行済みかどうかが、ログインできない相手にも分かってしまう。
+        この関数が True / False しか返さないのも同じ理由で、
+        失敗の内訳を呼び出し元に持ち出させないためである。
+
+    セキュリティ:
+        平文のパスワード（引数 password / user["password"]）はログにも
+        例外メッセージにも出さない。判定結果だけを返す。
+    """
+    password_hash = get_password_hash(user["user_id"])
+
+    # ハッシュがある社員は移行済み。DB側の値だけで判定する
+    if password_hash is not None:
+        return verify_password(password, password_hash)
+
+    # まだ移行されていない社員は、これまで通りCSVの平文と比較する
+    csv_password: str = user["password"]
+    if csv_password != password:
+        return False
+
+    # 正しいパスワードだと確認できたので、この機会にハッシュへ移行する
+    try:
+        set_password(user["user_id"], password)
+    except Exception:
+        # 保存に失敗してもログインは通す。
+        # 移行はログインの副次的な処理であり、DBが一時的に書けないというだけで
+        # 認証に通った社員を締め出すのは筋が違う。
+        # 保存できなかった社員は次回ログイン時に再度この経路を通るので、
+        # 取りこぼしたまま移行が終わることもない。
+        # （チャット履歴の保存に失敗しても回答は返す chat_router.py と同じ考え方）
+        #
+        # ログに出すのは user_id までにとどめる。
+        # パスワードの値を出すとハッシュ化した意味が無くなるため、絶対に出さない
+        #
+        # CodeQL の py/clear-text-logging-sensitive-data について（誤検知と判断している）:
+        #     検出される経路
+        #         Source … 上の get_user_by_employee_code() の戻り値
+        #         Sink   … このログ出力に渡す user["user_id"]
+        #
+        #     なぜ汚染扱いになるか:
+        #         get_user_by_employee_code() が返すのは data/users.csv の1行そのままで、
+        #         その辞書には password 列が含まれる。CodeQL は辞書全体を機密と見なすため、
+        #         そこから添字で取り出した値は、中身に関係なく機密として追跡される
+        #         （login() の logger.error に付けた注記と同じ理由）。
+        #
+        #     なぜ誤検知と判断できるか:
+        #         実際にログへ出るのは user_id（1〜9 の内部連番）だけで、
+        #         password の値は経路に一度も現れない。
+        #
+        #     なぜ値を落とさないか:
+        #         移行に失敗した社員を後から追うには user_id が要る。
+        #         落とすと user_passwords テーブルを直接見て
+        #         「行が無い社員」を探すしか手段がなくなり、
+        #         このログを置いた目的（誰の移行が失敗したか分かる形にする）が果たせない。
+        #
+        #     インライン抑制コメントは置かない。行末・直前の独立行のどちらでも
+        #     GitHub CodeQL Action 側で効かなかった前例があるため、
+        #     アラートは GitHub 上で dismiss する。
+        logger.exception(
+            "パスワードのハッシュ保存に失敗しました（ログインはそのまま続行します） user_id=%s",
+            user["user_id"],
+        )
+
+    return True
+
+
 class LoginRequest(BaseModel):
     employee_code: str
     password: str
@@ -228,17 +344,30 @@ async def login(req: LoginRequest):
 
         失敗時に token や role を返さないのは、認証できていない相手に
         ロールなどの情報を渡さないため。
-        message は「社員コードまたはパスワードが正しくありません」で統一しており、
+        認証の可否に関わる失敗の message は
+        「社員コードまたはパスワードが正しくありません」で統一しており、
         どちらが間違っているかは伝えない（存在する社員コードを推測されないため）。
 
-        失敗になるのは次の3つ。
+        失敗になるのは次の4つ。カッコ内が返す message。
         - 社員コードかパスワードが未入力
+          （「社員コードとパスワードを入力してください」）
+        - パスワードが72バイトを超えている
+          （「パスワードが長すぎます（72バイトまで）」）
         - 社員コードが見つからない、またはパスワードが一致しない
+          （「社員コードまたはパスワードが正しくありません」）
         - 実効ロールが VALID_ROLES に無い（user_roles テーブルに未知のロール名が
           記録されている場合など）
-        最後のケースも message を認証失敗と同一にしているのは、
+          （「社員コードまたはパスワードが正しくありません」）
+
+        ロールが不正なケースも message を認証失敗と同一にしているのは、
         「ロールが不正です」と伝えると内部の状態を外に漏らすことになるため。
         原因はサーバーのログ（logger.error）から追う。
+
+        逆に、上の2つ（未入力・長さ超過）が別の文言なのは、
+        認証の可否ではなく入力の形式の問題だから。
+        利用者が自分で直せるものは、直せるように理由を伝える。
+        どちらも社員を探す前に判定するので、
+        文言が分かれても社員コードの実在は漏れない。
 
     処理:
         1. 入力チェック → 社員コードでユーザーを探す → パスワード照合
@@ -255,12 +384,40 @@ async def login(req: LoginRequest):
     if not req.employee_code or not req.password:
         return {"success": False, "message": "社員コードとパスワードを入力してください"}
 
+    # パスワードの長さを、社員を探すより前にここで弾く。
+    #
+    # なぜ入口で弾くのか:
+    #     hash_password() も72バイトを超える入力を ValueError にするが、
+    #     そちらが呼ばれるのは verify_user_password() の移行処理の中で、
+    #     例外は except Exception に握られてログにしか残らない。
+    #     つまり利用者には何も伝わらないまま、毎回CSVの平文経路でログインし続ける
+    #     （＝いつまでもハッシュに移行されない）ことになる。
+    #     入口で弾いて理由をその場で伝えれば、利用者が自分で直せる。
+    #
+    # なぜ認証失敗と文言を分けるのか:
+    #     これは入力の形式の問題であって、社員コードやパスワードが
+    #     合っているかどうかとは別の話。認証失敗と同じ文言にすると、
+    #     正しいパスワードを入れているのに「間違っています」と言われることになり、
+    #     長さが原因だと気づけない。
+    #     ここで長さを伝えても、社員が実在するかどうかは漏れない
+    #     （社員を探す前に判定しているので、存在しない社員コードでも同じ応答になる）。
+    #
+    # Issue #123 との関係:
+    #     パスワードを画面から設定できるようにする際にも、同じ検証が要る。
+    #     設定時に72バイトを超える値を受け付けてしまうと、
+    #     保存できないパスワードを本人に決めさせることになる。
+    if len(req.password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        return {
+            "success": False,
+            "message": f"パスワードが長すぎます（{MAX_PASSWORD_BYTES}バイトまで）",
+        }
+
     user = get_user_by_employee_code(req.employee_code)
 
     if user is None:
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
 
-    if user["password"] != req.password:
+    if not verify_user_password(user, req.password):
         return {"success": False, "message": "社員コードまたはパスワードが正しくありません"}
 
     # 実効ロールをここで1回だけ決める（DBの上書きがあればそれ、無ければCSVの値）。
