@@ -36,8 +36,8 @@ Founder/
 ├── app/
 │   ├── main.py               # FastAPI エントリーポイント。ルーター登録と起動時のDB初期化
 │   ├── config.py             # 環境変数の読み込みと検証（未設定なら起動を止める）
-│   ├── database.py           # Cloud SQL(PostgreSQL) への接続とテーブル作成
-│   ├── users.py              # 社員マスタ(data/users.csv)を起動時に読み込む
+│   ├── database.py           # Cloud SQL(PostgreSQL) への接続・テーブル作成・社員マスタの初期投入
+│   ├── users.py              # 社員マスタ(users テーブル)の読み出し
 │   ├── user_logins.py        # 最終ログイン日時の記録・取得（user_logins テーブル）
 │   ├── storage.py            # ファイルの保存・読み出し・削除。保存先(GCS/ローカル)を隠す
 │   ├── upload_paths.py       # 保存先パスの安全な組み立て（パストラバーサル対策）
@@ -60,7 +60,7 @@ Founder/
 │   └── dev.py                # Secret Manager から機密情報を取得して開発サーバーを起動
 ├── tests/                    # pytest
 ├── data/
-│   └── users.csv             # 社員マスタ（ダミーデータ）
+│   └── users.csv             # 社員マスタの初期データ（起動時、users が空なら投入）
 ├── docs/
 │   ├── github-workflow.md    # GitHub運用ルール
 │   ├── requirements.md       # 要件定義書（詳細版）
@@ -115,7 +115,7 @@ IMPORTANT: static/index.html に全画面のUIプロトタイプあり。デザ�
 
 ## 認証（MVP）
 
-- CSVファイルで社員マスタ管理（ダミーデータ）
+- 社員マスタは users テーブル。初回起動時に data/users.csv（ダミーデータ）から投入する（既に行があれば何もしない）
 - ログインで社員コード＋パスワード → ロール判定（employee / source_manager / ceo / admin）
 - ADMIN=管理者、EMP001〜EMP006=社員、EMP007=共通ソース管理者、SYSADMIN=システム管理者
 

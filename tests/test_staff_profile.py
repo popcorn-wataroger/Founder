@@ -12,7 +12,13 @@
 
 外部サービスには繋がない:
     どちらの関数も文字列を組み立てるだけで、GeminiにもQdrantにも接続しない。
-    そのためAPIキーやDBが無くても実行できる（temp_db も不要）。
+    APIキーは不要。
+
+社員マスタの取得だけはDBを使う:
+    社員マスタは data/users.csv からDBの users テーブルへ移したため（Issue #123）、
+    get_user_by_id() を呼ぶテストには temp_db を付けている。
+    プロンプトの組み立て（_build_prompt）だけを見るテストはDBに触らないので、
+    これまでどおり temp_db なしで実行できる。
 
 APIを通した状態での確認は tests/test_staff_inquiry.py 側にある。
 """
@@ -26,13 +32,13 @@ from app import rag
 from app.rag import _build_prompt
 from app.users import format_user_profile, get_user_by_id
 
-# users.csv 上の想定: user_id=2 は EMP001（奥村仁哉、家族構成あり）
+# 社員マスタ上の想定: user_id=2 は EMP001（奥村仁哉、家族構成あり）
 STAFF_WITH_FAMILY = "2"
-# users.csv 上の想定: user_id=3 は EMP002（田中美咲、家族構成が空欄）
+# 社員マスタ上の想定: user_id=3 は EMP002（田中美咲、家族構成が空欄）
 STAFF_WITHOUT_FAMILY = "3"
 
 
-def test_基本情報がラベル付きの行として並ぶ() -> None:
+def test_基本情報がラベル付きの行として並ぶ(temp_db: None) -> None:
     """AIが項目名と値の対応を読み取れる形になっていることを確かめる。"""
     user = get_user_by_id(STAFF_WITH_FAMILY)
     assert user is not None
@@ -46,8 +52,8 @@ def test_基本情報がラベル付きの行として並ぶ() -> None:
     assert "入社日: 2020-04-01" in profile
 
 
-def test_パスワードとロールは含まれない() -> None:
-    """ここが最重要。users.csv の password は平文なので、渡すと回答文に出かねない。
+def test_パスワードとロールは含まれない(temp_db: None) -> None:
+    """ここが最重要。users テーブルの password は平文なので、渡すと回答文に出かねない。
 
     role も業務上の質問に無関係な内部の区分で、渡す理由がない。
     ホワイトリスト（PROFILE_FIELD_LABELS）に足さない限り漏れない作りになっている。
@@ -63,7 +69,7 @@ def test_パスワードとロールは含まれない() -> None:
     assert "パスワード" not in profile
 
 
-def test_値が空の項目は行ごと省かれる() -> None:
+def test_値が空の項目は行ごと省かれる(temp_db: None) -> None:
     """空欄を「家族構成: 」の形で渡すと、AIが空欄を値と解釈しかねない。
 
     行ごと省けば、AIから見て「その情報は与えられていない」状態になり、

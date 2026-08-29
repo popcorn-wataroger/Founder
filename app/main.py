@@ -10,7 +10,7 @@ from app.routers import auth_router, chat_router, sources_router
 from app.routers.auth_router import STAFF_LIST_EXCLUDED_ROLES, VALID_ROLES, require_ceo
 from app.user_logins import get_last_login_at
 from app.user_roles import set_role
-from app.users import get_user_by_id, resolve_role, users
+from app.users import get_all_users, get_user_by_id, resolve_role
 
 
 @asynccontextmanager
@@ -62,9 +62,9 @@ async def get_admin_users(token: dict = Depends(require_ceo)):
         除外するロールの一覧は app/routers/auth_router.py に集約している。
     """
     result = []
-    for user in users:
-        # CSVの role ではなく実効ロール（DBの上書きを優先）で判定する。
-        # CSVを見ると、DBで ceo にした社員が一覧に残り、
+    for user in get_all_users():
+        # users テーブルの role ではなく実効ロール（user_roles の上書きを優先）で判定する。
+        # 素の role を見ると、DBで ceo にした社員が一覧に残り、
         # DBで employee にした既定の社長が一覧から消えたままになる
         if resolve_role(user) in STAFF_LIST_EXCLUDED_ROLES:
             continue
@@ -99,18 +99,17 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
         4. 最終ログイン日時を user_logins テーブルから取り出す
         5. 画面に出す項目だけを1つずつ書き出して返す
 
-    なぜ最終ログインだけCSVではなくDBから読むか:
-        users.csv の last_login_at 列は全員空のまま使っていない。
-        ログインのたびに変わる値をGit管理下のCSVに書き戻すと差分が出るため、
-        記録先を user_logins テーブルに分けている（app/user_logins.py 参照）。
+    なぜ最終ログインだけ users テーブルから読まないか:
+        users の last_login_at 列は全員空のまま使っていない。
+        記録先は user_logins テーブルに分けてある（app/user_logins.py 参照）。
         まだ一度もログインしていない社員は記録が無いので空文字を返し、
         画面側（static/js/admin.js の formatLastLogin）が「未記録」と表示する。
 
     なぜ dict(user) をそのまま返さないか（重要）:
-        users.csv には password 列がある。user をそのまま返すと
+        users テーブルには password 列がある。user をそのまま返すと
         平文パスワードがAPIレスポンスに丸ごと乗ってしまう。
         「返す項目を1つずつ書き出す（ホワイトリスト方式）」にしておけば、
-        将来CSVに列が増えても、書き出していない列は自動的に外に出ない。
+        将来テーブルに列が増えても、書き出していない列は自動的に外に出ない。
 
     なぜ role を返すようになったか:
         社員データ画面でその社員のロールを表示し、変更するために必要になったため
@@ -118,8 +117,8 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
         現在のロールが分からないと、画面は変更後の値を選ばせようがない。
         このAPIは require_ceo を付けた社長専用なので、
         社員が他人のロールを知る経路にはならない。
-        なお、返すのは users.csv の role ではなく resolve_role の結果（実効ロール）。
-        CSVの値をそのまま返すと、DBで上書きしたロールが画面に反映されず、
+        なお、返すのは users テーブルの role ではなく resolve_role の結果（実効ロール）。
+        素の値をそのまま返すと、user_roles で上書きしたロールが画面に反映されず、
         「変更したのに変わっていない」ように見えてしまう。
 
     なぜ ceo と admin を404にするか:
@@ -137,7 +136,7 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
     if user is None:
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
-    # ロールはCSVの値ではなくDBの上書きを優先した「実効ロール」を使う。
+    # ロールは users の値ではなく user_roles の上書きを優先した「実効ロール」を使う。
     # 404の判定と返す値の両方でこれを使い回すのは、resolve_role が
     # user_roles をDBから引く（＝呼ぶたびに接続を開く）ため。
     # 2回引くと同じ答えのために接続が2回開くうえ、その間にロールが
@@ -145,12 +144,12 @@ async def get_admin_user_detail(user_id: str, token: dict = Depends(require_ceo)
     role = resolve_role(user)
 
     # 社長本人とシステム管理者（スタッフ一覧に出ない人）も404で揃える。
-    # ここもスタッフ一覧と同じく実効ロールで、同じ集合を見る。CSVの role で判定すると、
+    # ここもスタッフ一覧と同じく実効ロールで、同じ集合を見る。素の role で判定すると、
     # 一覧には出ないのに詳細は引ける（またはその逆）というずれが生まれる
     if role in STAFF_LIST_EXCLUDED_ROLES:
         raise HTTPException(status_code=404, detail="社員が見つかりません")
 
-    # 最終ログインはCSVではなくDBが持つ。記録が無ければ空文字（画面は「未記録」表示）
+    # 最終ログインは users ではなく user_logins が持つ。記録が無ければ空文字（画面は「未記録」表示）
     last_login_at = get_last_login_at(user_id) or ""
 
     # 画面に出す項目だけを明示的に書き出す（password は返さない）
