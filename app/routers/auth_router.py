@@ -283,6 +283,31 @@ def verify_user_password(user: dict, password: str) -> bool:
         #
         # ログに出すのは user_id までにとどめる。
         # パスワードの値を出すとハッシュ化した意味が無くなるため、絶対に出さない
+        #
+        # CodeQL の py/clear-text-logging-sensitive-data について（誤検知と判断している）:
+        #     検出される経路
+        #         Source … 上の get_user_by_employee_code() の戻り値
+        #         Sink   … このログ出力に渡す user["user_id"]
+        #
+        #     なぜ汚染扱いになるか:
+        #         get_user_by_employee_code() が返すのは data/users.csv の1行そのままで、
+        #         その辞書には password 列が含まれる。CodeQL は辞書全体を機密と見なすため、
+        #         そこから添字で取り出した値は、中身に関係なく機密として追跡される
+        #         （login() の logger.error に付けた注記と同じ理由）。
+        #
+        #     なぜ誤検知と判断できるか:
+        #         実際にログへ出るのは user_id（1〜9 の内部連番）だけで、
+        #         password の値は経路に一度も現れない。
+        #
+        #     なぜ値を落とさないか:
+        #         移行に失敗した社員を後から追うには user_id が要る。
+        #         落とすと user_passwords テーブルを直接見て
+        #         「行が無い社員」を探すしか手段がなくなり、
+        #         このログを置いた目的（誰の移行が失敗したか分かる形にする）が果たせない。
+        #
+        #     インライン抑制コメントは置かない。行末・直前の独立行のどちらでも
+        #     GitHub CodeQL Action 側で効かなかった前例があるため、
+        #     アラートは GitHub 上で dismiss する。
         logger.exception(
             "パスワードのハッシュ保存に失敗しました（ログインはそのまま続行します） user_id=%s",
             user["user_id"],
