@@ -331,7 +331,37 @@ linux/arm64   ← push しない。4-2 からやり直す
 docker push "$IMAGE"
 ```
 
-### 4-5. デプロイする
+### 4-5. 参照するシークレットのバージョン番号を確認する
+
+**デプロイの前に必ず実行します。**バージョン番号はシークレットごとに違い、ローテーションのたびに変わります。手順書に書かれている番号をそのまま使ってはいけません。
+
+```bash
+for S in JWT_SECRET_KEY GEMINI_API_KEY QDRANT_URL QDRANT_API_KEY DATABASE_URL; do
+  echo "--- $S"
+  gcloud secrets versions list "$S" --project=notebooklm-482403 \
+    --filter="state=enabled" --format="table(name,state)"
+done
+```
+
+`--filter="state=enabled"` を付けているのは、無効化されたバージョンを選ばないためです。ローテーションで古いバージョンを disabled にしても番号自体は残るため、フィルタなしの一覧には使えない番号も並びます。**無効なバージョンを指定してもデプロイコマンド自体は成功し、コンテナがシークレットを読めずに起動で失敗します。**気づきにくい壊れ方をするので、ここで有効なものだけを見ます。
+
+出力例（番号はダミーです。実際の番号は毎回このコマンドで確認してください）:
+
+```text
+--- JWT_SECRET_KEY
+NAME  STATE
+1     ENABLED
+
+--- DATABASE_URL
+NAME  STATE
+3     ENABLED
+```
+
+シークレットごとに、表示された `NAME` が使う番号です。上の例のように、シークレットによって番号が揃っていないのが普通の状態です。複数行出た場合はいちばん大きい番号（＝最新）を使います。ここで確認した5つの番号を、次の 4-6 のコマンドに入れます。
+
+### 4-6. デプロイする
+
+**コマンド内の `<確認した番号>` は、4-5 で確認した番号に置き換えてください。**置き換えないまま実行してもコマンドはエラーになります（確認を飛ばせないよう、そのままでは通らない形にしてあります）。
 
 ```bash
 gcloud run deploy founder \
@@ -341,7 +371,7 @@ gcloud run deploy founder \
   --allow-unauthenticated \
   --add-cloudsql-instances=notebooklm-482403:asia-northeast1:founder-db \
   --set-env-vars=APP_ENV=production,GCS_BUCKET_NAME=founder-sources-482403 \
-  --set-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:1,GEMINI_API_KEY=GEMINI_API_KEY:1,QDRANT_URL=QDRANT_URL:1,QDRANT_API_KEY=QDRANT_API_KEY:1,DATABASE_URL=DATABASE_URL:1
+  --set-secrets=JWT_SECRET_KEY=JWT_SECRET_KEY:<確認した番号>,GEMINI_API_KEY=GEMINI_API_KEY:<確認した番号>,QDRANT_URL=QDRANT_URL:<確認した番号>,QDRANT_API_KEY=QDRANT_API_KEY:<確認した番号>,DATABASE_URL=DATABASE_URL:<確認した番号>
 ```
 
 #### 各フラグの意味
@@ -373,16 +403,7 @@ URL を知っていれば誰でもページを開ける状態になります。*
 
 **バージョンは番号で固定します。`:latest` は使いません。**理由は `docs/secrets.md` の「バージョン指定の方針」に詳しく書いてあります。要点だけ言うと、`latest` はインスタンスが起動した時点の最新版を読むため、ローテーション中に新旧の鍵を持つインスタンスが混在し、「たまにログアウトされる」という再現しにくい障害になります。
 
-現在参照しているバージョン番号は次で確認できます。
-
-```bash
-for S in JWT_SECRET_KEY GEMINI_API_KEY QDRANT_URL QDRANT_API_KEY DATABASE_URL; do
-  echo "--- $S"
-  gcloud secrets versions list "$S" --project=notebooklm-482403 --format="table(name,state)"
-done
-```
-
-シークレットを更新した場合は、上のコマンドで新しい番号を確認し、デプロイコマンドの番号を書き換えてください。
+入れる番号は [4-5](#4-5-参照するシークレットのバージョン番号を確認する) で確認したものです。番号を固定する以上、**どの番号が有効かはデプロイのたびに確認する**必要があります。シークレットを更新（ローテーション）すると番号が変わり、古い番号は無効になるためです。
 
 #### `APP_ENV=production` の意味
 
@@ -390,7 +411,7 @@ done
 
 **渡し忘れても危険にはなりません。**未設定も本番相当として扱われる設計になっているためです（設定漏れは安全な側に倒す）。
 
-### 4-6. 動作確認
+### 4-7. 動作確認
 
 URL を取得します。
 
@@ -453,7 +474,7 @@ gcloud run services update founder \
 
 不要になった設定を消したいときは、削除専用の `--remove-env-vars` / `--remove-secrets` を使います。
 
-> 4-5 のデプロイコマンドで `--set-*` を使っているのは、**サービスを新規に作るときだけ**の話です。既存の設定が無いため、消える心配がありません。新しいイメージをデプロイし直すだけなら `--image` の変更だけで済みます。
+> 4-6 のデプロイコマンドで `--set-*` を使っているのは、**サービスを新規に作るときだけ**の話です。既存の設定が無いため、消える心配がありません。新しいイメージをデプロイし直すだけなら `--image` の変更だけで済みます。
 
 ### 新しいイメージだけを反映する場合
 
@@ -612,6 +633,7 @@ docker run --rm --name founder-local \
 - **`--set-env-vars` / `--set-secrets` を既存サービスに使う** … 指定しなかった設定が消えます（[5章](#5-2回目以降の注意)）
 - **`--platform linux/amd64` を省略する** … Apple Silicon では起動しないイメージができます（[4-2](#4-2-linuxamd64-を明示してビルドする)）
 - **シークレットのバージョンに `:latest` を使う** … ローテーション時に再現しにくい障害を生みます
+- **バージョン番号を確認せずにデプロイする** … 手順書や前回のコマンドに書かれた番号は、ローテーション後は無効になっていることがあります。デプロイのたびに [4-5](#4-5-参照するシークレットのバージョン番号を確認する) で確認します
 - **同じプロジェクトの `rag-app`（Cloud Run サービス／Artifact Registry リポジトリ）を操作する** … 別アプリのものです
 
 ---
