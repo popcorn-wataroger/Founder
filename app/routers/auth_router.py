@@ -186,6 +186,69 @@ def require_account_manager(token: dict = Depends(verify_token)) -> dict:
     return token
 
 
+def can_change_user_role(role: str) -> bool:
+    """他人のロールを変更できる役割かどうかを判定する。
+
+    入力:
+        role … ロール名の文字列（例: "ceo" / "admin" / "employee"）。
+                JWTの role や users テーブルの role をそのまま渡す想定。
+
+    処理:
+        role が ROLE_CEO か ROLE_ADMIN のいずれかに一致するかを調べる。
+        一致しないもの（未知のロール名や空文字を含む）はすべて許可しない側に倒す。
+
+    出力:
+        ロールの変更を許可してよいなら True、それ以外は False。
+
+    can_manage_accounts() を流用せず別の関数にしている理由（重要）:
+        can_manage_accounts() は「アカウント管理の画面を触れる人」を表していて、
+        通すのは admin だけ。
+        こちらのロール変更は、社長（ceo）が社員データ画面から行う経路が
+        すでにあるため、ceo と admin の両方を通す必要がある。
+        通してよい範囲がそもそも違う。
+        1つの関数に兼ねると、社長にアカウント一覧やパスワードの上書きまで
+        許すことになり、「アカウント・権限の管理は社長には無い」という
+        権限ルールと食い違う（CLAUDE.md の権限ルールを参照）。
+    """
+    return role in (ROLE_CEO, ROLE_ADMIN)
+
+
+def require_role_manager(token: dict = Depends(verify_token)) -> dict:
+    """ロールを変更する権限がなければ403を返す。
+
+    入力:
+        token … verify_token が検証したJWTの中身（user_id / role を含む）
+
+    処理:
+        token から role を取り出し、can_change_user_role() で可否を判定する。
+
+    出力:
+        権限があれば token をそのまま返す。なければ 403 を投げる。
+
+    使いどころ:
+        ロールの付け替え（PUT /api/admin/users/{user_id}/role）の入口に付ける。
+        社長（ceo）とシステム管理者（admin）だけが通り、
+        社員（employee）と共通ソース管理者（source_manager）は403になる。
+
+    判定を can_change_user_role() に分けている理由:
+        require_source_uploader / require_account_manager と同じく、
+        「誰がその権限を持つか（役割の持ち方）」と
+        「どこでその権限を要求するか（FastAPIの依存関係としての使い方）」を
+        分離しておくため。ロールを変更できる役割が将来増えても、
+        差し替えるのは can_change_user_role() の中身だけで済む。
+
+    require_ceo を書き換えずに追加した理由:
+        require_ceo はソースの操作や他人のチャットログ閲覧など、
+        いくつものエンドポイントが使っている。
+        あちらに admin を通す変更を入れると、
+        業務データを持たないはずのシステム管理者が
+        ソースやチャットログにも届いてしまう。
+    """
+    if not can_change_user_role(token.get("role", "")):
+        raise HTTPException(status_code=403, detail="ロールを変更する権限がありません")
+    return token
+
+
 def require_business_user(token: dict = Depends(verify_token)) -> dict:
     """システム管理者を業務機能から締め出す。それ以外は通す。
 
