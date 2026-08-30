@@ -39,6 +39,8 @@ Founder/
 │   ├── database.py           # Cloud SQL(PostgreSQL) への接続・テーブル作成・社員マスタの初期投入
 │   ├── users.py              # 社員マスタ(users テーブル)の読み出し
 │   ├── user_logins.py        # 最終ログイン日時の記録・取得（user_logins テーブル）
+│   ├── user_roles.py         # ロールの上書きの読み書き（user_roles テーブル）
+│   ├── user_passwords.py     # パスワードのハッシュ化・照合（user_passwords テーブル）
 │   ├── storage.py            # ファイルの保存・読み出し・削除。保存先(GCS/ローカル)を隠す
 │   ├── upload_paths.py       # 保存先パスの安全な組み立て（パストラバーサル対策）
 │   ├── vectorizer.py         # ソースの本文抽出とベクトル化
@@ -122,7 +124,9 @@ IMPORTANT: static/index.html に全画面のUIプロトタイプあり。デザ�
 ## データモデル
 
 ### users（社員マスタ）
-user_id(PK), employee_code, name, department, gender, birth_date, family, hire_date, employment_type, role(employee/source_manager/ceo/admin), password_hash, last_login_at
+user_id(PK), employee_code, name, department, gender, birth_date, family, hire_date, employment_type, password(初期パスワード・平文), role(employee/source_manager/ceo/admin ＝ 初期ロール), last_login_at(未使用)
+
+運用中に変わる値（最終ログイン・ロール・パスワード）は users に持たせず、下の3テーブルに1社員1行で分ける。users は data/users.csv から一度だけ投入される読み取り専用の社員マスタとして扱う。
 
 ### sources（ソース）
 source_id(PK), file_name, file_type(pdf/docx/pptx/txt/url), file_path, scope(common/individual), owner_user_id(FK→users, NULLなら共通), uploaded_at, uploaded_by(FK→users)
@@ -132,6 +136,19 @@ session_id(PK), user_id(FK→users), started_at, context_type(general/staff_inqu
 
 ### chat_messages（チャットメッセージ）
 message_id(PK), session_id(FK→chat_sessions), role(user/assistant), content, created_at, referenced_sources(参照ソースIDリスト)
+
+### user_logins（最終ログイン日時）
+user_id(PK, FK→users), last_login_at
+
+### user_roles（ロールの上書き）
+user_id(PK, FK→users), role(employee/source_manager/ceo/admin), updated_at, updated_by(変更した人のuser_id)
+
+実効ロールは app/users.py の resolve_role() が決める（この上書きがあればそれ、無ければ users.role）。「誰がいつ変えたか」を残せるのがこちらだけなので、users.role は書き換えない。
+
+### user_passwords（パスワード）
+user_id(PK, FK→users), password_hash(bcrypt), updated_at
+
+users.password は、まだハッシュが無い社員のログインに使うフォールバック。ログインに成功した時点でこちらへ移行する（app/routers/auth_router.py の verify_user_password）。
 
 ## 権限ルール
 
@@ -151,13 +168,18 @@ IMPORTANT: これらの権限ルールは絶対に守ること。
 | ソースのダウンロード | ✕ | ✕ | ○ | ✕ |
 | チャットログ閲覧 | 自分のみ | 自分のみ | 全員分 | ✕ |
 | 社員データ閲覧 | ✕ | ✕ | ○ | ✕ |
-| アカウント・権限の管理 | ✕ | ✕ | ✕ ※ | ○ |
+| 自分のパスワードの変更 | ○ | ○ | ○ | ○ |
+| アカウントの管理（一覧・追加・パスワードの強制上書き） | ✕ | ✕ | ✕ | ○ |
+| ロールの変更 | ✕ | ✕ | ○ | ○ |
 
-※ 「アカウント・権限の管理」の社長（ceo）について:
+この表は実装と一致している。食い違いを見つけた場合は、実装（コード）を正として表を直すこと。
 
-- この表は「そうあるべき」姿を書いている。**現時点の実装では ceo にロール変更API（PUT /api/admin/users/{user_id}/role）の権限があり、表とは一致していない**
-- アカウント管理をシステム管理者に集約するか、社長にも残すかは Issue #123・#124 で整理される予定。実装を表に合わせるのはその時点で行う
-- それまでは「表と実装が食い違っている行がここ1つある」ことを前提に読むこと。他の行は実装と一致している
+アカウントの管理とロールの変更を分けている理由（Issue #124）:
+
+- アカウントの一覧・追加・パスワードの強制上書きは admin だけができる。判定は app/routers/auth_router.py の can_manage_accounts()
+- ロールの変更（PUT /api/admin/users/{user_id}/role）は ceo と admin の両方ができる。判定は同ファイルの can_change_user_role()
+- 社長にロールの変更を残したのは、社員データ画面からの経路が既にあり、admin がゼロになっても誰かに admin を与え直せるようにしておくため。通してよい範囲が違うので、can_manage_accounts() を流用せず別の関数にしている
+- どちらのロールでも**自分自身は対象にできない**（403）。自分を降格させると、権限を戻す手段がDBの直接操作しか無くなるため
 
 削除について（Issue #118）:
 
