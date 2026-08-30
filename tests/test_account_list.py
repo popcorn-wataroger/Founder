@@ -1,4 +1,4 @@
-"""GET /api/admin/accounts（アカウント管理用の社員一覧）のテスト（Issue #123 段階4）。
+"""GET /api/admin/accounts（アカウント管理用の社員一覧）のテスト（Issue #123 段階4 / #124）。
 
 対象:
     GET /api/admin/accounts … システム管理者がアカウントを管理するための一覧
@@ -10,7 +10,9 @@
     3. role が実効ロール（user_roles の上書きを反映した値）であること。
        素の値を返すと、変更したロールが画面に反映されない
     4. 平文パスワードが返らないこと
-    5. 社長のスタッフ一覧（GET /api/admin/users）の挙動が変わっていないこと。
+    5. 誰がいつロールを変えたか（updated_at / updated_by）が返ること。
+       変更が無い社員では空文字になること（画面側に null の分岐を作らせないため）
+    6. 社長のスタッフ一覧（GET /api/admin/users）の挙動が変わっていないこと。
        用途の違う2本を1本に兼ねていないことを、両方の応答で確かめる
 
 DBを使う:
@@ -40,6 +42,10 @@ SOURCE_MANAGER = ("8", "EMP007", ROLE_SOURCE_MANAGER)
 
 # data/users.csv に入っている人数
 社員マスタの人数 = 9
+
+# data/users.csv の name。updated_by が氏名に変換されることを確かめるために使う
+CEO_NAME = "管理者"
+ADMIN_NAME = "システム管理者"
 
 
 def _headers(user_id: str, role: str) -> dict[str, str]:
@@ -82,15 +88,23 @@ def test_システム管理者は一覧を取得できる(client: TestClient, te
     assert len(response.json()) == 社員マスタの人数
 
 
-def test_返る項目は4つだけ(client: TestClient, temp_db: None) -> None:
+def test_返る項目は6つだけ(client: TestClient, temp_db: None) -> None:
     """平文パスワードが混ざらないことを、キーの集合そのもので固定する。
 
     「password が無いこと」だけを確かめると、
     生年月日や家族構成が増えたときに気づけない。
+    updated_at / updated_by は Issue #124 で足した2項目。
     """
     アカウント = _get_accounts(client)[0]
 
-    assert set(アカウント.keys()) == {"user_id", "employee_code", "name", "role"}
+    assert set(アカウント.keys()) == {
+        "user_id",
+        "employee_code",
+        "name",
+        "role",
+        "updated_at",
+        "updated_by",
+    }
 
 
 def test_社長とシステム管理者も含まれる(client: TestClient, temp_db: None) -> None:
@@ -184,6 +198,61 @@ def test_社長を降格させた場合も一覧から消えない(client: TestC
 
     assert アカウント[CEO[0]] == ROLE_EMPLOYEE
     assert len(アカウント) == 社員マスタの人数
+
+
+# --- B2. 誰がいつ変えたか（Issue #124）-----------------------------------------------
+
+
+def test_上書きが無い社員は変更日時と変更者が空文字(client: TestClient, temp_db: None) -> None:
+    """一度もロールを変更されていない社員は、2項目とも空文字で返る。
+
+    None（JSONでは null）を返すと、画面側に「null なら空欄にする」分岐が要る。
+    値が無いことを空文字で表しておけば、そのまま表示できる。
+    """
+    アカウント = {件["user_id"]: 件 for 件 in _get_accounts(client)}
+
+    assert アカウント[EMPLOYEE[0]]["updated_at"] == ""
+    assert アカウント[EMPLOYEE[0]]["updated_by"] == ""
+
+
+def test_ロールを変更した社員には日時と変更者が入る(client: TestClient, temp_db: None) -> None:
+    """ここが本命。誰がいつ変えたかが画面から確認できること。"""
+    set_role(EMPLOYEE[0], ROLE_SOURCE_MANAGER, updated_by=ADMIN[0])
+
+    アカウント = {件["user_id"]: 件 for 件 in _get_accounts(client)}
+
+    # set_role が入れた日時がそのまま返る（UTC・ISO形式なので日付が含まれる）
+    assert アカウント[EMPLOYEE[0]]["updated_at"] != ""
+    # updated_by は user_id ではなく氏名。IDのままでは画面で誰か分からない
+    assert アカウント[EMPLOYEE[0]]["updated_by"] == ADMIN_NAME
+
+    # 変更していない社員は空文字のまま（1人の変更が他人の行に漏れない）
+    assert アカウント[SOURCE_MANAGER[0]]["updated_at"] == ""
+    assert アカウント[SOURCE_MANAGER[0]]["updated_by"] == ""
+
+
+def test_社長が変更した場合は社長の氏名が入る(client: TestClient, temp_db: None) -> None:
+    """変更できるのは admin だけではない（社長の経路も残っている）ことを一覧側でも固定する。"""
+    set_role(EMPLOYEE[0], ROLE_SOURCE_MANAGER, updated_by=CEO[0])
+
+    アカウント = {件["user_id"]: 件 for 件 in _get_accounts(client)}
+
+    assert アカウント[EMPLOYEE[0]]["updated_by"] == CEO_NAME
+
+
+def test_変更者が社員マスタに居なければuser_idがそのまま返る(
+    client: TestClient, temp_db: None
+) -> None:
+    """氏名に変換できないときに空欄にしない。
+
+    空欄にすると「誰が変えたか分からない」だけでなく、調べる手がかりも消える。
+    IDが残っていれば、記録を追える。
+    """
+    set_role(EMPLOYEE[0], ROLE_SOURCE_MANAGER, updated_by="99999")
+
+    アカウント = {件["user_id"]: 件 for 件 in _get_accounts(client)}
+
+    assert アカウント[EMPLOYEE[0]]["updated_by"] == "99999"
 
 
 # --- C. 権限 -----------------------------------------------------------------------

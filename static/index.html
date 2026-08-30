@@ -600,7 +600,14 @@ button.sidebar-user:focus-visible {
 .detail-value { font-weight: 500; }
 /* 権限の行だけは値ではなく操作（選択＋保存）を置くので、横並びの入れ物にする */
 .detail-role-control { display: flex; align-items: center; gap: 8px; }
-.detail-role-control select {
+/* アカウント管理画面の一覧に置くロール変更（Issue #124）も、
+   社員データ画面と同じ見た目にする。
+   セレクトとボタンの並びも、押せないときの薄さも同じ操作なので、
+   同じ宣言を2つ書かずにセレクタを並べて共有する
+   （.source-control-group の input と select を揃えているのと同じ形）。 */
+.account-role-control { display: flex; align-items: center; gap: 8px; }
+.detail-role-control select,
+.account-role-control select {
   padding: 4px 8px;
   border: 1.5px solid var(--border);
   border-radius: var(--radius-sm);
@@ -609,9 +616,14 @@ button.sidebar-user:focus-visible {
   color: var(--text);
   font-family: inherit;
 }
-.detail-role-control select:focus { outline: none; border-color: var(--accent); }
-.detail-role-control button { padding: 5px 12px; font-size: 12px; }
-.detail-role-control button:disabled { opacity: 0.5; cursor: default; }
+.detail-role-control select:focus,
+.account-role-control select:focus { outline: none; border-color: var(--accent); }
+.detail-role-control button,
+.account-role-control button { padding: 5px 12px; font-size: 12px; }
+.detail-role-control button:disabled,
+.account-role-control button:disabled { opacity: 0.5; cursor: default; }
+/* 自分自身の行のセレクト。押せないことが見た目でも分かるようにする */
+.account-role-control select:disabled { opacity: 0.5; cursor: default; }
 .detail-chat-btn {
   width: 100%;
   margin-top: 20px;
@@ -1262,14 +1274,29 @@ button.sidebar-user:focus-visible {
          アカウント管理の用途には使えない -->
     <div class="account-section">
       <div class="account-section-title">アカウント一覧</div>
+      <!-- ロールの変更がいつ効くかを、操作する場所のそばに書いておく（Issue #124）。
+           ロールはログイン時に発行するJWTへ焼き付けられ、発行後は書き換えられない。
+           すでにログイン中の相手には反映されないため、黙っていると
+           「変更したのに権限が変わらない」と受け取られる。
+           社員データ画面（社長用）では変更後のメッセージで同じことを伝えているが、
+           こちらは一覧で何人ぶんも続けて変更できるため、常に見える位置に置く -->
+      <p class="upload-hint" style="margin-bottom: 12px;">
+        ロールの変更は、対象の社員が次にログインしたときから有効になります。
+      </p>
       <table class="source-table">
         <thead>
-          <tr><th>社員コード</th><th>氏名</th><th>ロール</th><th></th></tr>
+          <tr><th>社員コード</th><th>氏名</th><th>ロール</th><th>変更日時</th><th>変更した人</th><th></th></tr>
         </thead>
         <!-- 行は account-admin.js の loadAccounts() が埋める（初期状態は空）-->
         <tbody id="account-tbody"></tbody>
       </table>
       <div id="account-list-status" class="source-status"></div>
+      <!-- ロール変更の結果表示（Issue #124）。
+           一覧の取得（#account-list-status）と分けている理由:
+           変更に成功したら一覧を取り直すので、同じ欄に出すと
+           「読み込み中...」で成功メッセージが上書きされて消えてしまう。
+           追加と上書きが別々のメッセージ欄を持っているのと同じ形にする -->
+      <div id="account-role-status" class="source-status"></div>
     </div>
 
     <!-- 区画2: アカウント追加（POST /api/admin/accounts）-->
@@ -1430,6 +1457,10 @@ function showScreen(id) {
 //     切り離す。
 function logout() {
   beginLoginGeneration();
+  // 控えておいた社員コードも消す（Issue #124）。
+  // 残したままにすると、ログイン画面に戻ったあとも前の人の社員コードが
+  // メモリ上に残り続ける
+  clearLoginEmployeeCode();
   localStorage.removeItem("token");
   showScreen('screen-login');
 }

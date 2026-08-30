@@ -1,6 +1,8 @@
 """ロールの上書き（user_roles テーブル）のDB操作をまとめたモジュール。
 
-取得系（get_role）と書き込み系（set_role）の2つだけを持つ。
+取得系（get_role / get_all_role_overrides）と書き込み系（set_role）だけを持つ。
+get_all_role_overrides は一覧の画面のように全社員ぶんが要る場面のためのもので、
+get_role を人数ぶん呼ぶ代わりに1回のクエリでまとめて引く。
 
 なぜ data/users.csv ではなくDBに持つか:
     users.csv はGit管理下にあるため、運用中にロールを変えるたびに書き戻すと
@@ -116,3 +118,48 @@ def set_role(user_id: str, role: str, updated_by: str) -> None:
             (user_id, role, updated_at, updated_by),
         )
         conn.commit()
+
+
+def get_all_role_overrides() -> dict[str, dict[str, str]]:
+    """上書きされたロールを全社員ぶん、1回のクエリでまとめて返す。
+
+    入力:
+        なし
+
+    処理:
+        user_roles を全件取り出し、user_id をキーにした辞書に詰め替える。
+
+    出力:
+        {user_id: {"role": ロール名, "updated_at": 日時, "updated_by": 変更した人のuser_id}}
+        の形の辞書。上書きが一度も無ければ空の辞書。
+        キーに無い user_id は「一度も上書きされていない」という意味になり、
+        get_role() が None を返すのと同じことを表す。
+
+    get_role() と別に用意する理由（重要）:
+        get_role() は1人ぶんを1回のクエリで引く。一覧の画面のように
+        全社員ぶんが必要な場面でこれを人数ぶん呼ぶと、
+        社員100人でDB接続が100回開く（Issue #127）。
+        Cloud SQL は同時接続数に上限があるため、人数に比例して接続が増える書き方は
+        人が増えたときに一覧ごと落ちる原因になる。
+        全件が要る呼び出し元はこちらを1回だけ呼ぶ。
+
+        1人ぶんの取得（ログイン時の実効ロール判定など）は
+        引き続き get_role() を使う。全件を読み込んでから1件を取り出すのは無駄なため。
+
+    全件を一度に読んで問題ないと判断した理由:
+        user_roles は「1社員1行」で、行数は社員数を超えない（想定規模は100人以下）。
+        履歴を積むテーブルではないので、時間が経っても行数は増え続けない。
+    """
+    with closing(get_connection()) as conn:
+        rows = conn.execute(
+            "SELECT user_id, role, updated_at, updated_by FROM user_roles"
+        ).fetchall()
+
+    return {
+        row["user_id"]: {
+            "role": row["role"],
+            "updated_at": row["updated_at"],
+            "updated_by": row["updated_by"],
+        }
+        for row in rows
+    }

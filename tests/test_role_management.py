@@ -2,10 +2,11 @@
 
 何を守りたいか:
     1. ロールの上書きが「1社員1行」で正しく積まれること（UPSERT が効いていること）
-    2. ロール変更は社長だけができること。社員も source_manager も叩けない
+    2. ロール変更は社長（ceo）とシステム管理者（admin）だけができること。
+       社員も source_manager も叩けない（Issue #124）
     3. 知らないロール名や実在しない社員を保存させないこと
        （権限判定が知らない値がDBに入ると、その社員はどの権限にも当てはまらなくなる）
-    4. 社長が自分自身のロールを変えられないこと（管理者ゼロの事故を防ぐ）
+    4. 社長もシステム管理者も自分自身のロールを変えられないこと（管理者ゼロの事故を防ぐ）
     5. 変更したロールが、次回ログインで実際に効くこと
        （レスポンスの role と JWT の role が食い違わないこと）
 
@@ -18,6 +19,7 @@ users.csv 上の前提:
     user_id=1 … ADMIN（ceo）
     user_id=2 … EMP001（employee）
     user_id=8 … EMP007（source_manager）
+    user_id=9 … SYSADMIN（admin）
 """
 
 import jwt
@@ -27,6 +29,7 @@ from fastapi.testclient import TestClient
 from app import config, database
 from app.main import app
 from app.routers.auth_router import (
+    ROLE_ADMIN,
     ROLE_CEO,
     ROLE_EMPLOYEE,
     ROLE_SOURCE_MANAGER,
@@ -38,6 +41,9 @@ from app.user_roles import get_role, set_role
 # テストで使う社員の user_id（users.csv の並びに対応する）
 ADMIN_USER_ID = "1"
 EMPLOYEE_USER_ID = "2"
+SOURCE_MANAGER_USER_ID = "8"
+# システム管理者（SYSADMIN）。Issue #124 でロール変更を許した対象
+SYSADMIN_USER_ID = "9"
 
 
 def _headers(user_id: str, role: str) -> dict[str, str]:
@@ -192,19 +198,76 @@ def test_自分自身のロールは変更できない(変更後のロール: st
 
 
 @pytest.mark.parametrize("role", [ROLE_EMPLOYEE, ROLE_SOURCE_MANAGER])
-def test_管理者以外はロールを変更できない(role: str, temp_db: None) -> None:
-    """社員も source_manager も403（require_ceo が効いている）。
+def test_社員と共通ソース管理者はロールを変更できない(role: str, temp_db: None) -> None:
+    """社員も source_manager も403（require_role_manager が効いている）。
 
     ロールの付け替えは「誰が何を見られるか」を決める操作なので、
     共通ソースを登録できるだけの source_manager にも許さない。
+    Issue #124 で admin を通したあとも、この2つは通らないままであること。
     """
-    response = _update_role(TestClient(app), EMPLOYEE_USER_ID, ROLE_CEO, _headers("8", role))
+    response = _update_role(
+        TestClient(app), EMPLOYEE_USER_ID, ROLE_CEO, _headers(SOURCE_MANAGER_USER_ID, role)
+    )
 
     assert response.status_code == 403, response.text
-    assert response.json()["detail"] == "管理者のみ操作できます"
+    assert response.json()["detail"] == "ロールを変更する権限がありません"
 
     # 弾かれた以上、DBには何も積まれていないこと
     assert _fetch_role_rows(EMPLOYEE_USER_ID) == []
+
+
+def test_システム管理者は社員のロールを変更できる(temp_db: None) -> None:
+    """Issue #124 の本命。admin がロール変更のAPIを叩けること。
+
+    ここが403のままだと、システム管理者は他人に権限を渡せない。
+    """
+    response = _update_role(
+        TestClient(app),
+        EMPLOYEE_USER_ID,
+        ROLE_SOURCE_MANAGER,
+        _headers(SYSADMIN_USER_ID, ROLE_ADMIN),
+    )
+
+    assert response.status_code == 200, response.text
+
+    # DBに積まれ、変更した人としてシステム管理者が残っていること
+    rows = _fetch_role_rows(EMPLOYEE_USER_ID)
+    assert len(rows) == 1
+    assert rows[0]["role"] == ROLE_SOURCE_MANAGER
+    assert rows[0]["updated_by"] == SYSADMIN_USER_ID
+
+
+def test_システム管理者は他人にadminロールを与えられる(temp_db: None) -> None:
+    """アカウント管理の権限を引き継げること（Issue #124 のやりたいことそのもの）。
+
+    admin を与えられないと、システム管理者が1人のときに交代も引き継ぎもできない。
+    """
+    response = _update_role(
+        TestClient(app), EMPLOYEE_USER_ID, ROLE_ADMIN, _headers(SYSADMIN_USER_ID, ROLE_ADMIN)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["role"] == ROLE_ADMIN
+
+    rows = _fetch_role_rows(EMPLOYEE_USER_ID)
+    assert len(rows) == 1
+    assert rows[0]["role"] == ROLE_ADMIN
+
+
+@pytest.mark.parametrize("変更後のロール", [ROLE_EMPLOYEE, ROLE_ADMIN])
+def test_システム管理者も自分自身のロールは変更できない(変更後のロール: str, temp_db: None) -> None:
+    """admin を通したあとも、自分自身を対象にした変更は403のままであること。
+
+    社長のときと同じ理由（自分を降格させて権限を戻せなくなるのを防ぐ）で、
+    変更先が何であっても一律で拒否する。
+    """
+    response = _update_role(
+        TestClient(app), SYSADMIN_USER_ID, 変更後のロール, _headers(SYSADMIN_USER_ID, ROLE_ADMIN)
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "自分自身のロールは変更できません"
+    assert _fetch_role_rows(SYSADMIN_USER_ID) == []
 
 
 # --- C. ログイン時の実効ロール反映 ---------------------------------------------

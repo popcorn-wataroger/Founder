@@ -5,8 +5,15 @@
 //
 // この画面が持つ3つの区画:
 //     1. アカウント一覧          GET  /api/admin/accounts
+//        （行ごとのロール変更     PUT  /api/admin/users/{user_id}/role）
 //     2. アカウント追加          POST /api/admin/accounts
 //     3. パスワードの強制上書き  PUT  /api/admin/accounts/{user_id}/password
+//
+// ロール変更のAPIだけ /api/admin/users/... なのはなぜか:
+//     あれは社長が社員データ画面から使っている既存のAPI（Issue #91）で、
+//     Issue #124 で admin も通るようになった（サーバー側の require_role_manager）。
+//     同じ操作にAPIを2本用意すると、片方だけ直す事故が起きるため、
+//     この画面も既存のAPIをそのまま使う。
 //
 // なぜ admin.js を流用しないか:
 //     admin.js は管理者ホーム（#screen-admin）のDOM（#source-tbody / #staff-grid など）を
@@ -39,6 +46,15 @@ const ACCOUNT_ROLE_LABELS = {
   admin: "システム管理者",
 };
 
+// ロールのプルダウンに並べる順番。
+//
+// なぜラベルの辞書とは別に持つか:
+//     ACCOUNT_ROLE_LABELS はオブジェクトなので、キーの並び順に頼ると
+//     書き足した位置で画面の並びが変わる。並びは表示の一部なので明示する。
+//     権限の広さ順（社員 → 共通ソース管理者 → 社長 → システム管理者）に並べており、
+//     アカウント追加フォーム（index.html の #account-new-role）とも同じ順。
+const ACCOUNT_ROLE_ORDER = ["employee", "source_manager", "ceo", "admin"];
+
 // 一覧取得リクエストの通し番号。最新のリクエストだけがDOMを更新するために使う
 //
 // なぜ必要か:
@@ -65,6 +81,14 @@ let accountCreateGeneration = null;
 //     無視されたように見える。
 let accountResetGeneration = null;
 
+// ロール変更が進行中のログイン世代。追加・上書きとは別に持つ（Issue #124）
+//
+// 別に持つ理由:
+//     追加（#account-create-status）・上書き（#account-reset-status）と
+//     メッセージの出し先が違い、区画も違う。1つの変数を共有すると、
+//     ロールを変更している間はアカウントの追加が押せなくなる。
+let accountRoleGeneration = null;
+
 // パスワードを上書きする対象。一覧のボタンで選ぶまでは null
 //
 // user_id だけでなく氏名と社員コードも持つ理由:
@@ -90,7 +114,8 @@ function accountAuthHeaders(extra) {
  * 3つの区画のどれかにメッセージを表示する。
  *
  * 入力:
- *     elementId … #account-list-status / #account-create-status / #account-reset-status
+ *     elementId … #account-list-status / #account-role-status /
+ *                 #account-create-status / #account-reset-status
  *     message   … 表示する文字列（空なら消す）
  *     type      … "loading" | "success" | "error"
  * 出力: なし
@@ -125,6 +150,8 @@ function initAccountAdminScreen() {
   document.getElementById("account-new-role").value = "employee";
   document.getElementById("account-new-password").value = "";
   setAccountStatus("account-create-status", "", null);
+  // 前の人が変更したロールの結果が残らないようにする
+  setAccountStatus("account-role-status", "", null);
 
   clearAccountResetTarget();
   loadAccounts();
@@ -186,8 +213,12 @@ async function loadAccounts() {
 /**
  * アカウント1件分の行（<tr>）を組み立てて返す。
  *
- * 入力: account … { user_id, employee_code, name, role }
+ * 入力: account … { user_id, employee_code, name, role, updated_at, updated_by }
  * 出力: 組み立てた <tr>（呼び出し側が表に追加する）
+ *
+ * 列の並び:
+ *     社員コード / 氏名 / ロール（変更できる）/ 変更日時 / 変更した人 /
+ *     パスワードを上書き
  *
  * innerHTML を使わない理由:
  *     氏名や社員コードは登録した人が入力した値で、タグを含むこともあり得る。
@@ -195,14 +226,23 @@ async function loadAccounts() {
  *
  * ロールについて:
  *     GET /api/admin/accounts が返すのは実効ロール（user_roles の上書きを反映した値）。
- *     画面ではこれを日本語のラベルに直して出す。
+ *     画面ではこれをプルダウンの選択状態として出し、変更もここから行う。
+ *
+ * 変更日時・変更した人について:
+ *     どちらも user_roles に記録されている値（誰がいつロールを変えたか）。
+ *     一度もロールを変更されていない社員では、APIが両方とも空文字を返すので
+ *     セルは空欄になる。
  */
 function buildAccountRow(account) {
   const row = document.createElement("tr");
 
   row.appendChild(buildAccountCell(account.employee_code));
   row.appendChild(buildAccountCell(account.name));
-  row.appendChild(buildAccountCell(formatAccountRole(account.role)));
+  row.appendChild(buildAccountRoleCell(account));
+  row.appendChild(buildAccountCell(formatAccountUpdatedAt(account.updated_at)));
+  // updated_by はサーバー側で氏名に変換済み（app/main.py の get_admin_accounts）。
+  // 画面側では変換せず、返ってきた文字列をそのまま出す
+  row.appendChild(buildAccountCell(account.updated_by));
 
   const actionCell = document.createElement("td");
   // div + onclick にしない理由（Issue #114）:
@@ -250,10 +290,240 @@ function buildAccountCell(text) {
  * 知らないロールを隠さない理由:
  *     ラベルの追加漏れを空欄で隠すと、画面上は正常に見えてしまう。
  *     内部の値がそのまま出れば、追加し忘れに気づける。
+ *
+ * どこで使うか:
+ *     一覧のプルダウンの選択肢の文言（buildAccountRoleOption）と、
+ *     変更に成功したときのメッセージ。
  */
 function formatAccountRole(role) {
   if (!role) return "-";
   return ACCOUNT_ROLE_LABELS[role] || role;
+}
+
+/**
+ * ロールの列（<td>）を組み立てて返す。プルダウンと「変更」ボタンが入る。
+ *
+ * 入力: account … 一覧の1件分（user_id / employee_code / name / role）
+ * 出力: 組み立てた <td>
+ *
+ * 選んだ瞬間に送らず、ボタンを押させる理由（重要）:
+ *     ロールの変更は「誰が何を見られるか」を決める操作で、取り消しても
+ *     その間に見られた情報は戻らない。プルダウンを1つ隣に押し間違えただけで
+ *     即座に権限が変わる形は、この操作には強すぎる。
+ *     パスワードの強制上書きが「対象を選ぶまで入力欄を使えない」形になっているのと
+ *     同じ考え方で、実行までに一手間置く。
+ *
+ * 変わっていないときにボタンを押せなくする理由:
+ *     変わっていないのに送れると、押した側は何が起きたのか分からない。
+ *     「選び直してから押す」という順番を、押せる・押せないで示す。
+ *     社員データ画面の onRoleSelectChange() と同じ考え方。
+ *
+ * 自分自身の行について:
+ *     サーバーは自分自身のロール変更を403で拒否する（app/main.py の
+ *     update_admin_user_role）。403を見てからエラーを出すより、
+ *     最初から操作できない方が「できない操作」だと分かる。
+ *     判定に使うのはログイン時に控えた社員コード（static/js/session.js）。
+ *     これは表示のための判定で、権限の砦はあくまでサーバー側。
+ *     画面側の disabled を外されても、サーバーが403で拒否する構造は変わらない。
+ *
+ * 知らないロールが返ってきた場合:
+ *     その値の選択肢を足してから選ぶ。足さないとブラウザは「何も選ばれていない」
+ *     状態にするため、画面に出ている値と送られる値が食い違う
+ *     （社員データ画面の renderStaffRole() が employee に倒しているのと同じ問題への対処）。
+ */
+function buildAccountRoleCell(account) {
+  const cell = document.createElement("td");
+  const control = document.createElement("span");
+  control.className = "account-role-control";
+
+  // APIが role を返さなかった場合も「未選択」にせず、その値のまま扱う
+  const currentRole = account.role || "";
+
+  const select = document.createElement("select");
+  // <label> を置けない位置（表のセル）なので、読み上げ用の名前を属性で付ける
+  select.setAttribute("aria-label", `${account.name} のロール`);
+  ACCOUNT_ROLE_ORDER.forEach((role) => {
+    select.appendChild(buildAccountRoleOption(role));
+  });
+  if (!ACCOUNT_ROLE_ORDER.includes(currentRole)) {
+    select.appendChild(buildAccountRoleOption(currentRole));
+  }
+  select.value = currentRole;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn btn-outline";
+  button.textContent = "変更";
+  // 選び直すまでは押せない
+  button.disabled = true;
+
+  control.appendChild(select);
+  control.appendChild(button);
+
+  // ログイン中の本人の行かどうか。employee_code は users テーブルで一意なので、
+  // ログイン画面に入力された社員コードと突き合わせれば本人を特定できる
+  if (account.employee_code === currentEmployeeCode()) {
+    select.disabled = true;
+    const note = document.createElement("span");
+    // 既存の補足文言と同じ見た目（小さめ・淡い色）にする
+    note.className = "upload-hint";
+    note.textContent = "自分のロールは変更できません";
+    control.appendChild(note);
+  } else {
+    select.addEventListener("change", () => {
+      button.disabled = select.value === currentRole;
+    });
+    button.addEventListener("click", () => {
+      saveAccountRole(account, select, button, currentRole);
+    });
+  }
+
+  cell.appendChild(control);
+  return cell;
+}
+
+/**
+ * ロールのプルダウンの選択肢（<option>）を1つ作って返す。
+ *
+ * 入力: role … ロール名（APIが返す内部の値）
+ * 出力: 組み立てた <option>（value は内部の値、表示は日本語のラベル）
+ */
+function buildAccountRoleOption(role) {
+  const option = document.createElement("option");
+  option.value = role;
+  option.textContent = formatAccountRole(role);
+  return option;
+}
+
+/**
+ * 選んだロールを保存する（PUT /api/admin/users/{user_id}/role）。
+ *
+ * 入力:
+ *     account     … 対象の1件（user_id / employee_code / name を使う）
+ *     select      … その行のプルダウン
+ *     button      … その行の「変更」ボタン
+ *     currentRole … 変更前のロール（失敗したときに戻す先）
+ * 処理: 選択値を送り、成功したら一覧を取り直す
+ * 出力: なし（#account-role-status に結果を表示する）
+ *
+ * エラーになる場面:
+ *     400 … 知らないロール名（画面のプルダウンからは起きない）
+ *     403 … システム管理者・社長以外が叩いた場合／自分自身を対象にした場合
+ *     404 … 対象の user_id が存在しない場合（一覧を開いたまま消えた場合など）
+ *     いずれもAPIが detail に理由を入れて返すので、その文言をそのまま表示する。
+ *
+ * 送信中に行の操作を止める理由:
+ *     応答が返る前にもう一度押せると、同じ社員に2回送ることになる。
+ *     ボタンだけでなくプルダウンも止めるのは、送った値と画面の表示が
+ *     途中でずれないようにするため。
+ *
+ * 成功したら一覧を取り直す理由:
+ *     変更日時と変更した人（updated_at / updated_by）はサーバーが記録する値で、
+ *     画面側では作れない。取り直せば、いま行った変更が記録として行に出る。
+ *
+ * メッセージを一覧の状態表示（#account-list-status）と分けている理由:
+ *     成功後に呼ぶ loadAccounts() があの欄を「読み込み中...」で上書きするため、
+ *     同じ欄に出すと結果が一瞬で消える。
+ */
+async function saveAccountRole(account, select, button, currentRole) {
+  // 連打対策。処理中のボタンからの再実行は受け付けない
+  if (button.disabled) return;
+
+  const role = select.value;
+
+  // 通信を始めた時点のログイン世代を控える（Issue #99）。
+  // 応答が返るまでにログアウトして別の人がログインしていた場合、
+  // その結果は前の人のものなので画面には出さない
+  const generation = currentLoginGeneration();
+
+  // 同じログインの中で進行中なら何もしない
+  if (accountRoleGeneration === generation) return;
+  accountRoleGeneration = generation;
+
+  select.disabled = true;
+  button.disabled = true;
+  setAccountStatus("account-role-status", "ロールを変更中...", "loading");
+
+  try {
+    const res = await fetch(`/api/admin/users/${encodeURIComponent(account.user_id)}/role`, {
+      method: "PUT",
+      headers: accountAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ role: role }),
+    });
+    const data = await parseJsonOrNull(res);
+    if (!res.ok || !data) {
+      throw new ApiError((data && data.detail) || "ロールの変更に失敗しました");
+    }
+
+    if (!isSameLoginGeneration(generation)) return;
+
+    // 「いつから有効か」を必ず添える。
+    // ロールはログイン時に発行するJWTへ焼き付けられ、発行後は書き換えられないため、
+    // すでにログイン中の相手には反映されない。
+    // 黙っていると「変更したのに権限が変わらない」と受け取られる
+    setAccountStatus(
+      "account-role-status",
+      `${account.name}（${account.employee_code}）のロールを` +
+        `${formatAccountRole(data.role || role)}に変更しました。` +
+        "対象の社員が次にログインしたときから有効になります。",
+      "success"
+    );
+    // 一覧を取り直して、変更日時と変更した人を反映する。
+    // 行は作り直されるので、この行の select / button の状態は戻さなくてよい
+    loadAccounts();
+  } catch (e) {
+    if (!isSameLoginGeneration(generation)) return;
+    setAccountStatus("account-role-status", toDisplayMessage(e), "error");
+    // 送る前の状態に戻す。
+    // 選択を変更後の値のままにすると、画面には変わったように見えるのに
+    // サーバーには保存されていない、という食い違いが残る
+    select.value = currentRole;
+    select.disabled = false;
+    button.disabled = true;
+  } finally {
+    // 成功・失敗のどちらでも必ず解放する。
+    //
+    // 自分が取った分だけ解放する理由:
+    //     無条件に null にすると、あとから始まった新しい世代の
+    //     変更まで「実行していない」ことにしてしまう。
+    if (accountRoleGeneration === generation) {
+      accountRoleGeneration = null;
+    }
+  }
+}
+
+/**
+ * ロールを変更した日時を画面表示用の文字列にする。
+ *
+ * 入力: value … APIが返す updated_at（UTC・ISO形式の文字列。変更が無ければ空文字）
+ * 出力: "2026.8.30 14:22" の形の文字列。空文字なら空文字、日時として読めなければ元の値
+ *
+ * ブラウザのローカル時刻に直す理由:
+ *     保存されているのはUTC（例: 2026-08-30T05:22:10.123456+00:00）。
+ *     そのまま出すと日本時間から9時間ずれた時刻を読ませることになり、
+ *     文字列も長くて表の幅を取る。
+ *
+ * 空文字を空文字のまま返す理由:
+ *     一度もロールを変更されていない社員は「記録が無い」だけで、
+ *     日時が壊れているわけではない。空欄にしておけば、
+ *     変更されたことがある社員の行だけが目に留まる。
+ *
+ * 読めない値をそのまま返す理由:
+ *     整形できないことを空欄で隠すと、画面上は正常に見えてしまう。
+ *     値がそのまま出れば、おかしな記録が入っていることに気づける
+ *     （formatAccountRole が知らないロールを隠さないのと同じ）。
+ *
+ * admin.js の formatLastLogin() を呼ばない理由:
+ *     出力の形式は同じだが、あちらは管理者ホーム用のファイルで、
+ *     この画面から呼ぶと依存関係が逆流する
+ *     （accountAuthHeaders() が authHeaders() を複製しているのと同じ判断）。
+ */
+function formatAccountUpdatedAt(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return value;
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()} ${time}`;
 }
 
 /**

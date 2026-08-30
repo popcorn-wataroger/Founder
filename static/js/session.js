@@ -29,6 +29,32 @@
 // 現在のログイン世代。ログイン・ログアウトのたびに1つ進む
 let loginGeneration = 0;
 
+// いまログインしている人の社員コード。ログインしていなければ空文字（Issue #124）
+//
+// 何に使うか:
+//     アカウント管理画面（account-admin.js）が「一覧のこの行は自分自身か」を
+//     判定するために使う。自分のロール変更はサーバーが403で拒否するため、
+//     画面側でも最初から操作できない形にする。
+//
+// なぜ user_id ではなく社員コードか:
+//     POST /api/login が返すのは success / role / name / token だけで、
+//     user_id は返らない。一方 GET /api/admin/accounts は employee_code を返し、
+//     employee_code は users テーブルで一意（app/database.py の
+//     USERS_EMPLOYEE_CODE_UNIQUE）。ログインの検索も完全一致なので、
+//     ログイン画面に入力された値と一覧の値は必ず同じ文字列になる。
+//     氏名（name）は一意ではないため使わない。
+//
+// なぜトークンをデコードしないか:
+//     JWTの中身には user_id が入っているが、あれはサーバーが検証して初めて
+//     意味を持つ値で、画面側でほどいた中身は「検証していない自己申告」でしかない。
+//     入力された社員コードを控えるだけなら、base64やJWTを解く処理も要らない。
+//
+// なぜ localStorage に入れないか:
+//     再読み込みするとログイン画面に戻るため、保存しても使い道がない。
+//     世代番号と同じくタブを閉じれば消える変数にしておけば、
+//     ログアウト後に前の人の社員コードがブラウザに残ることもない。
+let loginEmployeeCode = "";
+
 /**
  * 世代番号を1つ進める。
  *
@@ -63,4 +89,39 @@ function currentLoginGeneration() {
  */
 function isSameLoginGeneration(generation) {
   return generation === loginGeneration;
+}
+
+/**
+ * いまログインした人の社員コードを控える。
+ *
+ * 入力: employeeCode … ログイン画面に入力された社員コード
+ * 出力: なし
+ *
+ * ログイン成功時に login.js から呼ぶ。
+ */
+function setLoginEmployeeCode(employeeCode) {
+  loginEmployeeCode = employeeCode || "";
+}
+
+/**
+ * いまログインしている人の社員コードを返す。
+ *
+ * 入力: なし
+ * 出力: 社員コードの文字列（ログインしていなければ空文字）
+ */
+function currentEmployeeCode() {
+  return loginEmployeeCode;
+}
+
+/**
+ * 控えておいた社員コードを消す。
+ *
+ * 入力: なし
+ * 出力: なし
+ *
+ * ログアウト時に呼ぶ。消しておかないと、ログイン画面に戻ったあとも
+ * 前の人の社員コードが残る。
+ */
+function clearLoginEmployeeCode() {
+  loginEmployeeCode = "";
 }

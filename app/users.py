@@ -30,6 +30,7 @@ __all__ = [
     "next_user_id",
     "create_user",
     "resolve_role",
+    "resolve_role_from_overrides",
     "format_user_profile",
     "PROFILE_FIELD_LABELS",
 ]
@@ -319,8 +320,41 @@ def resolve_role(user: dict) -> str:
     """
     # DBの上書きを先に見る（無ければ None が返る）
     overridden_role = get_role(user["user_id"])
-    if overridden_role is not None:
-        return overridden_role
+
+    # 優先順位そのものは resolve_role_from_overrides() に持たせ、
+    # こちらは「1人ぶんをDBから引いてくる」ことだけを担当する。
+    # 同じ規則を2つの関数に書き写すと、片方だけ直したときに
+    # 「一覧では新しいロール、ログインでは古いロール」のような食い違いが起きる
+    overrides = {} if overridden_role is None else {user["user_id"]: {"role": overridden_role}}
+    return resolve_role_from_overrides(user, overrides)
+
+
+def resolve_role_from_overrides(user: dict, overrides: dict[str, dict[str, str]]) -> str:
+    """まとめて取得済みの上書きを使って、その社員の実効ロールを返す。
+
+    入力:
+        user      … 社員1人分の辞書（users テーブルの1行）。user_id と role を持つ前提
+        overrides … app/user_roles.py の get_all_role_overrides() が返す辞書。
+                    {user_id: {"role": ..., "updated_at": ..., "updated_by": ...}}
+
+    処理:
+        1. overrides に その社員の user_id があれば、その "role" を返す
+        2. 無ければ users テーブルの role を返す
+
+    出力:
+        実際に権限判定へ使うロール名の文字列
+
+    resolve_role() と分けている理由:
+        規則（上書きを優先する）は同じで、上書きの取り方だけが違う。
+        1人ぶんならDBから1行引けばよいが、一覧の画面では人数ぶん引くことになり、
+        社員100人でDB接続が100回開く（Issue #127）。
+        全社員ぶんを1回で引いた辞書を渡せるように、
+        「値を受け取って決めるだけ」の形をこちらに用意した。
+        resolve_role() もこの関数を通すので、優先順位の規則はここ1箇所にある。
+    """
+    override = overrides.get(user["user_id"])
+    if override is not None:
+        return override["role"]
 
     # 一度も変更されていない社員は、users テーブルに入っている初期値をそのまま使う
     role: str = user["role"]

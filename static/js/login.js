@@ -44,6 +44,18 @@ async function handleLogin() {
   //     通信を始める。それらが控える世代番号は、新しい世代である必要がある。
   beginLoginGeneration();
 
+  // 入力された社員コードを控える（Issue #124）。
+  //
+  // 何に使うか:
+  //     アカウント管理画面が「一覧のこの行は自分自身か」を判定するために使う。
+  //     ログインAPIは user_id を返さないため、一意な社員コードで突き合わせる
+  //     （理由の詳細は static/js/session.js の loginEmployeeCode のコメント）。
+  //
+  // 世代番号を進めた直後に置く理由:
+  //     このあとの initAccountAdminScreen() は一覧の取得を始める。
+  //     控えるのが遅れると、最初に描画される一覧で自分の行を判定できない。
+  setLoginEmployeeCode(employeeCode);
+
   // チャット画面にある「＋ 全社共通の資料を追加」ボタンの表示を、ロールで決め直す（Issue #116）。
   //
   // なぜログインのたびに決め直すか:

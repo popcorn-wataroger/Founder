@@ -12,12 +12,13 @@ from app.routers.auth_router import (
     VALID_ROLES,
     require_account_manager,
     require_ceo,
+    require_role_manager,
     verify_token,
     verify_user_password,
 )
 from app.user_logins import get_last_login_at
 from app.user_passwords import check_password_length, set_password
-from app.user_roles import set_role
+from app.user_roles import get_all_role_overrides, set_role
 from app.users import (
     EmployeeCodeAlreadyExistsError,
     create_user,
@@ -25,6 +26,7 @@ from app.users import (
     get_user_by_id,
     next_user_id,
     resolve_role,
+    resolve_role_from_overrides,
 )
 
 
@@ -189,15 +191,16 @@ class RoleUpdateRequest(BaseModel):
 
 @app.put("/api/admin/users/{user_id}/role")
 async def update_admin_user_role(
-    user_id: str, req: RoleUpdateRequest, token: dict = Depends(require_ceo)
+    user_id: str, req: RoleUpdateRequest, token: dict = Depends(require_role_manager)
 ) -> dict[str, object]:
-    """指定した社員のロールを変更する（社長専用）。
+    """指定した社員のロールを変更する（社長・システム管理者専用）。
 
     入力:
         user_id … ロールを変える対象の user_id（URLパスで指定）
         req     … リクエストボディ（RoleUpdateRequest）
-            role … 変更後のロール名（employee / source_manager / ceo）
-        token   … require_ceo が返すログイン情報（社長でなければ403で弾かれている）
+            role … 変更後のロール名（employee / source_manager / ceo / admin）
+        token   … require_role_manager が返すログイン情報
+                （社長・システム管理者でなければ403で弾かれている）
 
     出力:
         {"success": True, "user_id": 対象のuser_id, "role": 変更後のロール}
@@ -210,13 +213,21 @@ async def update_admin_user_role(
 
     エラー:
         400 … 知らないロール名を指定した場合
-        403 … 社員が叩いた場合（require_ceo が投げる）／自分自身を対象にした場合
+        403 … 社員・共通ソース管理者が叩いた場合（require_role_manager が投げる）／
+              自分自身を対象にした場合
         404 … 対象の user_id が存在しない場合
 
     権限について:
-        require_ceo を付けているので、社員と source_manager が叩くと403で拒否される。
+        require_role_manager を付けているので、社長（ceo）とシステム管理者（admin）が通り、
+        社員（employee）と共通ソース管理者（source_manager）は403で拒否される。
         ロールの付け替えは「誰が何を見られるか」を決める操作なので、
         共通ソースを登録できるだけの source_manager には許さない。
+
+        admin を通す理由（Issue #124）:
+            システム管理者はアカウントの管理を担当する役割で、
+            他人にアカウント管理の権限（＝admin ロール）を与えられないと、
+            管理を引き継ぐ手段が無くなる。
+            社長（ceo）がこれまで通り社員データ画面から変更できる経路は残す。
 
     いつから有効になるか（重要）:
         変更は対象ユーザーの「次回ログインから」有効になる。
@@ -256,10 +267,19 @@ async def update_admin_user_role(
     #    変更先が ceo であっても一律で拒否するのは、判定を単純に保つため。
     #    「ceo → ceo なら実質何も変わらないので許す」といった例外を作ると、
     #    条件が増えるほど事故を防げているかの確認が難しくなる
+    #
+    #    admin が別の admin を降格させて admin がゼロになる経路について（Issue #124）:
+    #        admin を通したことで、この経路が新しくできた。今回は対策しない。
+    #        社長（ceo）もこのAPIでロールを変更できるため、admin がゼロになっても
+    #        誰かに admin を与え直せる（詰まない）。
+    #        「これが最後の admin か」を数える判定を足すと、
+    #        自分自身の判定と合わせて条件が2つに増え、
+    #        どちらがどの事故を防いでいるのかを確かめにくくなる。
+    #        上のコメントと同じ「判定を単純に保つ」という方針に揃えている。
     if user_id == token["user_id"]:
         raise HTTPException(status_code=403, detail="自分自身のロールは変更できません")
 
-    # 4. 誰がいつ変えたかを一緒に残す（updated_by は変更した社長の user_id）
+    # 4. 誰がいつ変えたかを一緒に残す（updated_by は変更した人の user_id）
     set_role(user_id, req.role, updated_by=token["user_id"])
 
     return {"success": True, "user_id": user_id, "role": req.role}
@@ -308,11 +328,16 @@ async def get_admin_accounts(
                 （システム管理者でなければ403で弾かれている）
 
     出力:
-        1人につき {user_id, employee_code, name, role} を持つ辞書のリスト。
-        並び順は get_all_users() のまま（user_id の文字列順）
+        1人につき {user_id, employee_code, name, role, updated_at, updated_by} を持つ
+        辞書のリスト。並び順は get_all_users() のまま（user_id の数値順）
+
+        updated_at … そのロールを最後に変更した日時（UTC・ISO形式の文字列）
+        updated_by … そのロールを最後に変更した人の氏名
+        この2つは、一度もロールを変更されていない社員では両方とも空文字になる。
 
     処理:
-        全社員を取り出し、1人ずつ実効ロールを解決して、画面に出す4項目だけを詰め直す。
+        全社員と、ロールの上書き（user_roles の全行）をそれぞれ1回ずつ取り出し、
+        突き合わせて画面に出す6項目だけを詰め直す。
 
     なぜ GET /api/admin/users と別に作るのか（重要）:
         あちらは社長のスタッフ一覧で、require_ceo・
@@ -340,24 +365,65 @@ async def get_admin_accounts(
         平文がAPIレスポンスに乗る。返す項目を1つずつ書き出しておけば、
         将来テーブルに列が増えても、書き出していない列は外に出ない。
 
-    resolve_role() を1人ずつ呼んでいることについて（Issue #127）:
-        resolve_role() は内部で user_roles をDBから引くため、
-        社員100人ならDB接続が100回開く。
-        既存の get_admin_users() も同じ書き方で、同じ問題を持っている。
-        まとめて取得する仕組み（user_roles を1回で引いて辞書にする等）は
-        Issue #127 で両方まとめて直す。ここで片方だけ先に直すと、
-        同じ処理の書き方が2つに分かれ、#127 の作業が増えるため、
-        いまは既存に揃えることを優先している。
+    ロールの上書きを1回でまとめて引いている理由（Issue #124 / #127）:
+        以前は resolve_role() を1人ずつ呼んでいたが、あれは内部で user_roles を
+        1行引くため、社員100人でDB接続が100回開いていた。
+        ここに updated_at / updated_by の取得を足すと、
+        同じ書き方では接続がさらに増える。
+        get_all_role_overrides() で user_roles を1回だけ読み、
+        user_id をキーにした辞書として突き合わせる形にしたので、
+        このAPIが開くDB接続は社員数によらず2回（users と user_roles）になる。
+
+        なお、社長のスタッフ一覧（GET /api/admin/users）は
+        いまも resolve_role() を1人ずつ呼んでいる。あちらは Issue #127 の範囲。
+
+    updated_by を user_id ではなく氏名で返す理由:
+        user_roles に入っているのは変更した人の user_id で、
+        そのままでは画面に出しても誰か分からない。
+        変換に必要な社員の一覧は、この関数がすでに get_all_users() で持っているため、
+        DBを引き直さずに氏名へ置き換えられる。
+        画面側が「IDから氏名を引く」処理を持たずに済み、
+        last_login_at などと同じ「そのまま表示できる形で返す」方針にも揃う。
+
+        氏名が見つからないとき（users に居ない user_id が記録されていたとき）は
+        user_id をそのまま入れる。空欄にすると調べる手がかりが消えるため。
+
+    上書きが無い社員で None ではなく空文字を返す理由:
+        画面はこの2つをそのまま表示する。None（JSONでは null）を返すと、
+        表示側に「null なら空文字にする」分岐が要る。
+        値が無いことを空文字で表しておけば、そのまま表示して問題ない。
     """
+    users = get_all_users()
+
+    # ロールの上書き（user_roles の全行）を1回で取得する。
+    # キーが無い user_id は「一度も変更されていない」という意味になる
+    overrides = get_all_role_overrides()
+
+    # 変更した人の user_id を氏名に置き換えるための対応表。
+    # 追加でDBを引かず、いま取得済みの users から作る
+    names = {user["user_id"]: user["name"] for user in users}
+
     accounts = []
-    for user in get_all_users():
+    for user in users:
+        override = overrides.get(user["user_id"])
+        if override is None:
+            # 一度もロールを変更されていない社員。変更の記録そのものが無い
+            updated_at = ""
+            updated_by = ""
+        else:
+            updated_at = override["updated_at"]
+            # users に居ない user_id だった場合は、IDをそのまま残す
+            updated_by = names.get(override["updated_by"], override["updated_by"])
+
         accounts.append(
             {
                 "user_id": user["user_id"],
                 "employee_code": user["employee_code"],
                 "name": user["name"],
                 # 素の users.role ではなく、user_roles の上書きを優先した実効ロール
-                "role": resolve_role(user),
+                "role": resolve_role_from_overrides(user, overrides),
+                "updated_at": updated_at,
+                "updated_by": updated_by,
             }
         )
     return accounts
